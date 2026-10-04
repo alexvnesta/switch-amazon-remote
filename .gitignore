@@ -21,3 +21,4 @@ captures/
 *.dmp
 *.heic
 *.HEIC
+dist/

@@ -19,4 +19,4 @@ jobs:
       - name: Publication hygiene
         run: python3 scripts/check_public_tree.py
       - name: Host sanitizers and exhaustive controller tests
-        run: make host-test
+        run: make host-test release-test

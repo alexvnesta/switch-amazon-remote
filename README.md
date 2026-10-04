@@ -4,7 +4,7 @@ Open-source work toward using Amazon Fire TV remotes with a homebrew-enabled
 Nintendo Switch. **Early experimental developer project—not a finished driver.**
 
 The K7Q3M7 remote has delivered real, decoded BLE button presses and releases in
-our foreground diagnostic probe. We are now testing a separate background
+our foreground diagnostic probe. We are developing a separate background
 sysmodule that can translate them into a virtual Switch controller.
 
 ## Compatibility today
@@ -62,6 +62,11 @@ make switch-build
 Builds do **not** install or start anything. `exefs.nsp` is an ExeFS module
 container, not a game NSP. No boot2 flag or enable configuration is supplied.
 No prebuilt “stable support” release is advertised yet.
+
+Experimental downloads are on [GitHub Releases](https://github.com/alexvnesta/switch-amazon-remote/releases).
+The probe and **inactive** module are separate assets with source, checksums and
+build provenance. They still require the custom observer; release builds are not
+hardware-validation evidence. See [release policy](docs/RELEASING.md).
 
 ## Safety and testing
 

@@ -1,4 +1,4 @@
-.PHONY: host-test switch-build privacy-check
+.PHONY: host-test switch-build privacy-check release-test
 host-test:
 	$(MAKE) -C host_tests test
 	$(MAKE) -C tools/amazon-remote-module host-test
@@ -7,3 +7,5 @@ switch-build:
 	$(MAKE) -C tools/amazon-remote-module all
 privacy-check:
 	python3 scripts/check_public_tree.py
+release-test:
+	python3 scripts/test_release.py

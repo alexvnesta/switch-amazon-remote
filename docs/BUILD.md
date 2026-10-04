@@ -32,8 +32,10 @@ make switch-build
 Outputs: `tools/amazon-remote-probe/amazon-remote-probe.nro`,
 `tools/amazon-remote-module/build/exefs.nsp`, and
 `tools/amazon-remote-module/build/amazon-remote-control.nro`.
-Build outputs are ignored by Git; no SDK, console binaries or private receipts
-are published. A successful build is not a device-compatibility proof.
+Build outputs are ignored by Git. Experimental prereleases can publish only the
+reviewed probe and inactive candidate packages, with source and provenance; SDK
+archives and private receipts are never published. A successful build is not a
+device-compatibility proof. See [release policy](RELEASING.md).
 
 ## Required passive MissionControl observer
 
