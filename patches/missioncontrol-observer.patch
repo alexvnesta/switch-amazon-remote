@@ -1,0 +1,228 @@
+diff --git a/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_ble.cpp b/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_ble.cpp
+index c0d2f8b..c40d0ac 100644
+--- a/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_ble.cpp
++++ b/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_ble.cpp
+@@ -15,6 +15,7 @@
+  */
+ #include "bluetooth_ble.hpp"
+ #include "../btdrv_mitm_flags.hpp"
++#include "../../amazon_remote/managed_observer_runtime.hpp"
+ 
+ namespace ams::bluetooth::ble {
+ 
+@@ -72,6 +73,8 @@ namespace ams::bluetooth::ble {
+         {
+             std::scoped_lock lk(g_event_data_lock);
+             R_ABORT_UNLESS(btdrvGetBleManagedEventInfo(&g_event_info, sizeof(bluetooth::BleEventInfo), &g_current_event_type));
++            // Copy-only passive tap. Never consume, rewrite, or suppress Horizon's event.
++            ams::mc::amazon_observer::Observe(static_cast<u32>(g_current_event_type), &g_event_info, sizeof(g_event_info));
+         }
+ 
+         if (!g_redirect_ble_events) {
+diff --git a/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp b/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp
+index ba6c6c5..a345e84 100644
+--- a/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp
++++ b/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp
+@@ -21,10 +21,40 @@
+ #include "bluetooth/bluetooth_ble.hpp"
+ #include "../mcmitm_initialization.hpp"
+ #include "../controllers/controller_management.hpp"
++#include "../amazon_remote/intent_trace_runtime.hpp"
+ #include <switch.h>
+ 
+ namespace ams::mitm::bluetooth {
+ 
++    Result BtdrvMitmService::TraceBleIntent(u32 command, const void *payload, size_t size) {
++        // The IPC server is the sole producer. Never wait for a callback or issue
++        // another driver command here. The SF sentinel forwards the ORIGINAL
++        // saved request, not reconstructed metadata, preserving driver results.
++        ams::mc::ble_intent_trace::Observe(command, m_client_info.program_id.value,
++            m_client_info.process_id.value, payload, size);
++        R_RETURN(sm::mitm::ResultShouldForwardToSession());
++    }
++    Result BtdrvMitmService::EnableBle() { return TraceBleIntent(47, nullptr, 0); }
++    Result BtdrvMitmService::DisableBle() { return TraceBleIntent(48, nullptr, 0); }
++    Result BtdrvMitmService::FinalizeBle() { return TraceBleIntent(49, nullptr, 0); }
++    Result BtdrvMitmService::StartBleScan() { return TraceBleIntent(55, nullptr, 0); }
++    Result BtdrvMitmService::StopBleScan() { return TraceBleIntent(56, nullptr, 0); }
++    Result BtdrvMitmService::AddBleScanFilterCondition(const sf::InPointerBuffer &buffer) {
++        return TraceBleIntent(57, buffer.GetPointer(), buffer.GetSize());
++    }
++    Result BtdrvMitmService::DeleteBleScanFilterCondition(const sf::InPointerBuffer &buffer) {
++        return TraceBleIntent(58, buffer.GetPointer(), buffer.GetSize());
++    }
++    Result BtdrvMitmService::DeleteBleScanFilter(u8 index) { return TraceBleIntent(59, &index, sizeof(index)); }
++    Result BtdrvMitmService::ClearBleScanFilters() { return TraceBleIntent(60, nullptr, 0); }
++    Result BtdrvMitmService::EnableBleScanFilter(bool enabled) {
++        const u8 value = enabled ? 1 : 0; // Metadata is semantic; raw request is unchanged.
++        return TraceBleIntent(61, &value, sizeof(value));
++    }
++    Result BtdrvMitmService::RegisterGattClient(BtdrvGattAttributeUuid uuid) { return TraceBleIntent(62, &uuid, sizeof(uuid)); }
++    Result BtdrvMitmService::UnregisterGattClient(u8 client_if) { return TraceBleIntent(63, &client_if, sizeof(client_if)); }
++    Result BtdrvMitmService::UnregisterAllGattClients() { return TraceBleIntent(64, nullptr, 0); }
++
+     Result BtdrvMitmService::InitializeBluetooth(sf::OutCopyHandle out_handle) {
+         if (!ams::bluetooth::core::IsInitialized()) {
+             // Forward to the real function to obtain the system event handle
+diff --git a/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.hpp b/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.hpp
+index e484920..ae05fd1 100644
+--- a/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.hpp
++++ b/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.hpp
+@@ -28,6 +28,19 @@
+     AMS_SF_METHOD_INFO(C, H, 37,    Result, RegisterHidReportEvent,           (sf::OutCopyHandle out_handle),                                                           (out_handle),           hos::Version_4_0_0)                     \
+     AMS_SF_METHOD_INFO(C, H, 38,    Result, GetHidReportEventInfo,            (sf::OutCopyHandle out_handle),                                                           (out_handle),           hos::Version_7_0_0)                     \
+     AMS_SF_METHOD_INFO(C, H, 46,    Result, InitializeBle,                    (sf::OutCopyHandle out_handle),                                                           (out_handle),           hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 47,    Result, EnableBle,                        (),                                                                                       (),                     hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 48,    Result, DisableBle,                       (),                                                                                       (),                     hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 49,    Result, FinalizeBle,                      (),                                                                                       (),                     hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 55,    Result, StartBleScan,                     (),                                                                                       (),                     hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 56,    Result, StopBleScan,                      (),                                                                                       (),                     hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 57,    Result, AddBleScanFilterCondition,        (const sf::InPointerBuffer &buffer),                                                       (buffer),               hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 58,    Result, DeleteBleScanFilterCondition,     (const sf::InPointerBuffer &buffer),                                                       (buffer),               hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 59,    Result, DeleteBleScanFilter,               (u8 index),                                                                               (index),                hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 60,    Result, ClearBleScanFilters,              (),                                                                                       (),                     hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 61,    Result, EnableBleScanFilter,              (bool enabled),                                                                           (enabled),              hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 62,    Result, RegisterGattClient,               (BtdrvGattAttributeUuid uuid),                                                            (uuid),                 hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 63,    Result, UnregisterGattClient,             (u8 client_if),                                                                           (client_if),            hos::Version_5_0_0)                     \
++    AMS_SF_METHOD_INFO(C, H, 64,    Result, UnregisterAllGattClients,         (),                                                                                       (),                     hos::Version_5_0_0)                     \
+     AMS_SF_METHOD_INFO(C, H, 79,    Result, GetBleManagedEventInfo,           (sf::Out<ams::bluetooth::BleEventType> out_type, const sf::OutPointerBuffer &out_buffer), (out_type, out_buffer), hos::Version_5_1_0)                     \
+     AMS_SF_METHOD_INFO(C, H, 36,    Result, RegisterHidReportEventDeprecated, (sf::OutCopyHandle out_handle),                                                           (out_handle),           hos::Version_1_0_0, hos::Version_3_0_2) \
+     AMS_SF_METHOD_INFO(C, H, 37,    Result, GetHidReportEventInfoDeprecated1, (sf::Out<ams::bluetooth::HidEventType> out_type, const sf::OutPointerBuffer &out_buffer), (out_type, out_buffer), hos::Version_1_0_0, hos::Version_3_0_2) \
+@@ -68,6 +81,19 @@ namespace ams::mitm::bluetooth {
+             Result GetHidReportEventInfo(sf::OutCopyHandle out_handle);
+             /* 5.0.0+ */
+             Result InitializeBle(sf::OutCopyHandle out_handle);
++            Result EnableBle();
++            Result DisableBle();
++            Result FinalizeBle();
++            Result StartBleScan();
++            Result StopBleScan();
++            Result AddBleScanFilterCondition(const sf::InPointerBuffer &buffer);
++            Result DeleteBleScanFilterCondition(const sf::InPointerBuffer &buffer);
++            Result DeleteBleScanFilter(u8 index);
++            Result ClearBleScanFilters();
++            Result EnableBleScanFilter(bool enabled);
++            Result RegisterGattClient(BtdrvGattAttributeUuid uuid);
++            Result UnregisterGattClient(u8 client_if);
++            Result UnregisterAllGattClients();
+             Result GetBleManagedEventInfo(sf::Out<ams::bluetooth::BleEventType> out_type, const sf::OutPointerBuffer &out_buffer);
+ 
+             /* Deprecated */
+@@ -85,6 +111,8 @@ namespace ams::mitm::bluetooth {
+             void RedirectBleEvents(bool redirect);
+             void ForwardHidReportEvent();
+             void ConsumeHidReportEvent();
++        private:
++            Result TraceBleIntent(u32 command, const void *payload, size_t size);
+     };
+     static_assert(IsIBtdrvMitmInterface<BtdrvMitmService>);
+ 
+diff --git a/mc_mitm/source/mc/mc_service.cpp b/mc_mitm/source/mc/mc_service.cpp
+index e94ba7c..11469d5 100644
+--- a/mc_mitm/source/mc/mc_service.cpp
++++ b/mc_mitm/source/mc/mc_service.cpp
+@@ -17,6 +17,7 @@
+ #include "../mcmitm_version.hpp"
+ #include "../bluetooth_mitm/btdrv_ext.h"
+ #include "../bluetooth_mitm/bluetooth/bluetooth_core.hpp"
++#include "../amazon_remote/managed_observer_runtime.hpp"
+ 
+ namespace ams::mc {
+ 
+@@ -83,4 +84,24 @@ namespace ams::mc {
+         R_RETURN(btdrvextDmSetConfig(&set_config.config));
+     }
+ 
++    Result MissionControlService::GetTargetSighting(const sf::OutPointerBuffer &out_buffer) {
++        // Exact fixed-size output; no Bluetooth command or state mutation.
++        if (!amazon_observer::ReadTargetSighting(out_buffer.GetPointer(), out_buffer.GetSize()))
++            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
++        R_SUCCEED();
++    }
++    Result MissionControlService::ArmTargetCapture() {
++        if (!amazon_observer::ArmTargetCapture()) return MAKERESULT(Module_Libnx, LibnxError_BadInput);
++        R_SUCCEED();
++    }
++    Result MissionControlService::GetCaptureStatus(const sf::OutPointerBuffer &out_buffer) {
++        if (!amazon_observer::ReadCaptureStatus(out_buffer.GetPointer(), out_buffer.GetSize()))
++            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
++        R_SUCCEED();
++    }
++    Result MissionControlService::EndTargetCapture() {
++        amazon_observer::EndTargetCapture();
++        R_SUCCEED();
++    }
++
+ }
+diff --git a/mc_mitm/source/mc/mc_service.hpp b/mc_mitm/source/mc/mc_service.hpp
+index 5c940fe..5fd3ef3 100644
+--- a/mc_mitm/source/mc/mc_service.hpp
++++ b/mc_mitm/source/mc/mc_service.hpp
+@@ -25,6 +25,10 @@
+     AMS_SF_METHOD_INFO(C, H, 3, Result, GetHciHandle,          (bluetooth::Address address, sf::Out<u16> handle),                                       (address, handle)           ) \
+     AMS_SF_METHOD_INFO(C, H, 4, Result, SendHciCommand,        (u16 opcode, const sf::InPointerBuffer &buffer, const sf::OutPointerBuffer &out_buffer), (opcode, buffer, out_buffer)) \
+     AMS_SF_METHOD_INFO(C, H, 5, Result, DmSetConfig,           (const ams::mc::BsaSetConfig &set_config),                                               (set_config)                ) \
++    AMS_SF_METHOD_INFO(C, H, 65000, Result, GetTargetSighting, (const sf::OutPointerBuffer &out_buffer),                                                (out_buffer)                ) \
++    AMS_SF_METHOD_INFO(C, H, 65001, Result, ArmTargetCapture, (), ()) \
++    AMS_SF_METHOD_INFO(C, H, 65002, Result, GetCaptureStatus, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
++    AMS_SF_METHOD_INFO(C, H, 65003, Result, EndTargetCapture, (), ()) \
+ 
+ AMS_SF_DEFINE_INTERFACE(ams::mc, IMissionControlInterface, AMS_MISSION_CONTROL_INTERFACE_INFO, 0x30eba3d4)
+ 
+@@ -38,6 +42,10 @@ namespace ams::mc {
+             Result GetHciHandle(bluetooth::Address address, sf::Out<u16> handle);
+             Result SendHciCommand(u16 opcode, const sf::InPointerBuffer &buffer, const sf::OutPointerBuffer &out_buffer);
+             Result DmSetConfig(const ams::mc::BsaSetConfig &set_config);
++            Result GetTargetSighting(const sf::OutPointerBuffer &out_buffer);
++            Result ArmTargetCapture();
++            Result GetCaptureStatus(const sf::OutPointerBuffer &out_buffer);
++            Result EndTargetCapture();
+     };
+     static_assert(IsIMissionControlInterface<MissionControlService>);
+ 
+diff --git a/mc_mitm/source/mcmitm_main.cpp b/mc_mitm/source/mcmitm_main.cpp
+index d052d28..b1b6bc5 100644
+--- a/mc_mitm/source/mcmitm_main.cpp
++++ b/mc_mitm/source/mcmitm_main.cpp
+@@ -18,6 +18,7 @@
+ #include "mcmitm_initialization.hpp"
+ #include "mcmitm_config.hpp"
+ #include "mcmitm_process_monitor.hpp"
++#include "amazon_remote/managed_observer_runtime.hpp"
+ 
+ namespace ams {
+ 
+@@ -82,6 +83,7 @@ namespace ams {
+         void Startup() {
+             // Load module configuration from ini file
+             mitm::LoadConfiguration();
++            mc::amazon_observer::Initialize();
+         }
+ 
+     }
+@@ -89,6 +91,7 @@ namespace ams {
+     void Main() {
+         // Launch mitm and other modules
+         mitm::LaunchModules();
++        mc::amazon_observer::Start();
+ 
+         // Initialise pm module
+         psc::PmModuleId pm_module_id = static_cast<psc::PmModuleId>(0xBD);
+@@ -129,7 +132,7 @@ namespace ams {
+                                 shutdown = true;
+                                 [[fallthrough]];
+                             case psc::PmState_SleepReady:
+-                                /* Run sleep/shutdown code */
++                                mc::amazon_observer::Suspend();
+                                 break;
+                             default:
+                                 break;
+@@ -142,6 +145,8 @@ namespace ams {
+                 case 1:
+                     timer_event.Clear();
+                     mc::CheckForProcessSwitch();
++                    // Bounded draining on the existing maintenance timer, never the BLE thread.
++                    mc::amazon_observer::Poll();
+                     break;
+ 
+                 AMS_UNREACHABLE_DEFAULT_CASE();

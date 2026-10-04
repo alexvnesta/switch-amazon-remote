@@ -1,0 +1,22 @@
+name: Host tests and publication hygiene
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  host-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Publication hygiene
+        run: python3 scripts/check_public_tree.py
+      - name: Host sanitizers and exhaustive controller tests
+        run: make host-test
