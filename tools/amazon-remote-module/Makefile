@@ -22,6 +22,14 @@ build/module.elf: main.cpp $(TRANSPORT) $(HEADERS) Makefile | build/exefs
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -Wl,-Map,build/module.map main.cpp $(TRANSPORT) $(LIBS) -o $@
 build/exefs.nsp: build/exefs/main build/exefs/main.npdm
 	$(DEVKITPRO)/tools/bin/build_pfs0 build/exefs $@
+build/safe-id-exefs/main: build/exefs/main
+	mkdir -p build/safe-id-exefs
+	cp $< $@
+build/safe-id-exefs/main.npdm: module-safe-id.json
+	mkdir -p build/safe-id-exefs
+	$(DEVKITPRO)/tools/bin/npdmtool $< $@
+build/safe-id-exefs.nsp: build/safe-id-exefs/main build/safe-id-exefs/main.npdm
+	$(DEVKITPRO)/tools/bin/build_pfs0 build/safe-id-exefs $@
 build/control.elf: control/main.cpp io.hpp protocol.hpp startup.hpp Makefile | build/exefs
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) control/main.cpp $(LIBS) -o $@
 build/control.nacp: Makefile | build/exefs
@@ -52,6 +60,12 @@ build/layout-check.nacp: Makefile | build/exefs
 	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Layout Check" "switch-amazon-remote contributors" "0.2.0-a2-diag5" $@
 build/amazon-remote-layout-check.nro: build/layout-check.elf build/layout-check.nacp
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/layout-check.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
+build/launch-fix.elf: control/launch_fix.cpp launch_fix.hpp launch_fix_sdk.hpp state_sdk.hpp state_check.hpp startup.hpp protocol.hpp io.hpp Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) control/launch_fix.cpp $(LIBS) -o $@
+build/launch-fix.nacp: Makefile | build/exefs
+	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Launch Fix" "switch-amazon-remote contributors" "0.2.0-a2-diag6" $@
+build/amazon-remote-launch-fix.nro: build/launch-fix.elf build/launch-fix.nacp
+	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/launch-fix.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
 build/exefs:
 	mkdir -p $@
 host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp tests/test_launch.cpp tests/test_launch_sdk.cpp tests/fake_sdk/switch.h hdls_backend.hpp controller.hpp protocol.hpp io.hpp config.hpp startup.hpp startup_storage.hpp launch_test.hpp launch_sdk.hpp $(SOURCE)/remote_decoder.hpp
@@ -70,5 +84,7 @@ host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp test
 	./build/test_state_sdk
 	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -Itests/fake_sdk tests/test_memory_sdk.cpp -o build/test_memory_sdk
 	./build/test_memory_sdk
+	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -Itests/fake_sdk tests/test_launch_fix.cpp -o build/test_launch_fix
+	./build/test_launch_fix
 HOST_CXX ?= c++
 .PHONY: all host-test
