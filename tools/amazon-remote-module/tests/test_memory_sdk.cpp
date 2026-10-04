@@ -11,13 +11,18 @@ std::array<unsigned char,4096> alias{},code{},note{},data{};
 Service service; VirtmemReservation reservation;
 unsigned hints=15, maps{},unmaps{},locks{},unlocks{},reservations{},queries{};
 unsigned map_fail{},unmap_fail{};
+unsigned code_type=MemType_CodeStatic,code_attr{},code_permissions=Perm_R|Perm_X;
+u64 code_size=0x2b000;
 Result init_rc{},query_rc{},info_rc{},state_rc{};
 bool wrong_identity{},bad_attribute{},no_space{},never_code{},query_failure{};
+bool wide_unmapped_tail{},wide_mapped_tail{};
 u64 pid=137;
 void Reset() {
     hints=15; maps=unmaps=locks=unlocks=reservations=queries=map_fail=unmap_fail=0;
     init_rc=query_rc=info_rc=state_rc=0; pid=137;
+    code_type=MemType_CodeStatic;code_size=0x2b000;code_attr=0;code_permissions=Perm_R|Perm_X;
     wrong_identity=bad_attribute=no_space=never_code=query_failure=false;
+    wide_unmapped_tail=wide_mapped_tail=false;
     alias.fill(0);code.fill(0);note.fill(0);data.fill(0);
     std::memcpy(code.data()+0xaf0,armodule::CodeFingerprint.data(),64);
     std::memcpy(note.data()+0x590,armodule::BuildNote.data(),36);
@@ -52,10 +57,10 @@ Result svcQueryProcessMemory(MemoryInfo *out,u32 *page,Handle h,u64 address) {
     if (query_failure) return 55;
     if (never_code) {*out={address,4096,0,0,0};return 0;}
     if (address<base) *out={0,base,0,0,0};
-    else if (address<base+0x2b000) *out={base,0x2b000,MemType_CodeStatic,0,Perm_R|Perm_X};
-    else if (address<base+0x34000) *out={base+0x2b000,0x9000,MemType_CodeStatic,0,Perm_R};
+    else if (address<base+code_size) *out={base,code_size,code_type,code_attr,code_permissions};
+    else if (address<base+0x34000) *out={base+code_size,0x34000-code_size,MemType_CodeStatic,0,Perm_R};
     else if (address<base+0x36000) *out={base+0x34000,0x2000,MemType_CodeMutable,0,Perm_R|2};
-    else *out={base+0x36000,(1ull<<39)-(base+0x36000),0,0,0};
+    else *out={base+0x36000,wide_unmapped_tail||wide_mapped_tail?u64(0)-(base+0x36000):(1ull<<39)-(base+0x36000),wide_mapped_tail?MemType_CodeStatic:0,0,0};
     if (bad_attribute && address==base+0x35000) out->attr=1;
     return 0;
 }
@@ -79,6 +84,28 @@ int main() {
     assert(armodule::ValidMemoryRecord(r) && r.startup_valid && r.startup.stage==1 && r.state==2 && r.state_valid);
     assert(r.base==base && r.fingerprint_valid && r.build_note_valid && r.record_coherent);
     assert(maps==3 && unmaps==3 && locks==unlocks && data==original);
+    Reset();wide_unmapped_tail=true;armodule::LayoutRecord tail{};
+    r=armodule::CaptureMemoryCheckpoint(1,true,&tail);assert(tail.complete && r.startup_valid && tail.entries[4].size>(1ull<<39));
+    Reset();wide_mapped_tail=true;r=armodule::CaptureMemoryCheckpoint(1,true,&tail);assert(!tail.complete && !maps);
+    for (unsigned type : {MemType_CodeStatic,MemType_CodeMutable}) {
+        for (u64 extent : {u64(0x2000),u64(0x2b000),u64(0x2c000)}) {
+            Reset();code_type=type;code_size=extent;armodule::LayoutRecord layout{};
+            r=armodule::CaptureMemoryCheckpoint(1,true,&layout);
+            assert(r.startup_valid && layout.complete && layout.count==5 && armodule::ValidLayoutRecord(layout));
+            assert(layout.entries[1].type==type && layout.entries[1].size==extent && layout.entries[1].guards==31);
+        }
+    }
+    for (unsigned type : {0u,5u,8u,9u}) {
+        Reset();code_type=type;armodule::LayoutRecord layout{};
+        r=armodule::CaptureMemoryCheckpoint(1,true,&layout);
+        assert(!maps && layout.complete && layout.count==5 && !(layout.entries[1].guards&armodule::GuardCodeType));
+    }
+    Reset();code_size=0x1000;armodule::LayoutRecord rejected{};
+    r=armodule::CaptureMemoryCheckpoint(1,true,&rejected);assert(!maps && !(rejected.entries[1].guards&armodule::GuardExtent));
+    Reset();code_attr=16;r=armodule::CaptureMemoryCheckpoint(1,true,&rejected);
+    assert(!maps && !(rejected.entries[1].guards&armodule::GuardAttributes));
+    Reset();code_permissions=Perm_R;r=armodule::CaptureMemoryCheckpoint(1,true,&rejected);
+    assert(!maps && !(rejected.entries[1].guards&armodule::GuardRx));
     Reset();r=armodule::CaptureMemoryCheckpoint(1,false);assert(!maps && !queries && r.init_result==armodule::NotAttempted);
     for (unsigned mask=0;mask<15;++mask) {Reset();hints=mask;r=armodule::CaptureMemoryCheckpoint(1,true);assert(!maps && !queries);}
     Reset();init_rc=9;r=armodule::CaptureMemoryCheckpoint(1,true);assert(!queries && !r.record_copied);
@@ -104,5 +131,13 @@ int main() {
     assert(armodule::SaveMemoryExclusive(path.c_str(),r));assert(!armodule::SaveMemoryExclusive(path.c_str(),r));
     armodule::MemoryRecord copy{};assert(armodule::ReadExact(path.c_str(),copy) && !std::memcmp(&r,&copy,sizeof r));
     assert(std::remove(path.c_str())==0 && rmdir(directory)==0);
+    Reset();armodule::LayoutRecord layout{};(void)armodule::CaptureMemoryCheckpoint(2,true,&layout);
+    assert(armodule::ValidLayoutRecord(layout));layout.checksum++;assert(!armodule::ValidLayoutRecord(layout));
+    layout.checksum=armodule::LayoutChecksum(layout);
+    char layout_directory[]="/tmp/amazon-layout-test-XXXXXX";assert(mkdtemp(layout_directory));
+    const std::string layout_path=std::string(layout_directory)+"/owned.bin";
+    assert(armodule::SaveLayoutExclusive(layout_path.c_str(),layout));assert(!armodule::SaveLayoutExclusive(layout_path.c_str(),layout));
+    armodule::LayoutRecord layout_copy{};assert(armodule::ReadExact(layout_path.c_str(),layout_copy) && !std::memcmp(&layout,&layout_copy,sizeof layout));
+    assert(std::remove(layout_path.c_str())==0 && rmdir(layout_directory)==0);
     std::puts("PASS RAM adapter: identity/hints, exact code+build ID, page bounds, source unchanged, mapping cleanup/failures,128-region bound, checksum and exclusive evidence; not hardware proof");
 }

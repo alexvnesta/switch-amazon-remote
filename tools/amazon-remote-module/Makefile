@@ -46,6 +46,12 @@ build/memory-check.nacp: Makefile | build/exefs
 	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote RAM Check" "switch-amazon-remote contributors" "0.2.0-a2-diag4" $@
 build/amazon-remote-memory-check.nro: build/memory-check.elf build/memory-check.nacp
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/memory-check.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
+build/layout-check.elf: control/layout_check.cpp layout_check.hpp memory_sdk.hpp memory_check.hpp module_identity.hpp state_sdk.hpp state_check.hpp startup.hpp io.hpp Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) control/layout_check.cpp $(LIBS) -o $@
+build/layout-check.nacp: Makefile | build/exefs
+	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Layout Check" "switch-amazon-remote contributors" "0.2.0-a2-diag5" $@
+build/amazon-remote-layout-check.nro: build/layout-check.elf build/layout-check.nacp
+	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/layout-check.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
 build/exefs:
 	mkdir -p $@
 host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp tests/test_launch.cpp tests/test_launch_sdk.cpp tests/fake_sdk/switch.h hdls_backend.hpp controller.hpp protocol.hpp io.hpp config.hpp startup.hpp startup_storage.hpp launch_test.hpp launch_sdk.hpp $(SOURCE)/remote_decoder.hpp

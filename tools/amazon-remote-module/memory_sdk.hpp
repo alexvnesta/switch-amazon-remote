@@ -2,6 +2,7 @@
 #pragma once
 #include "state_sdk.hpp"
 #include "memory_check.hpp"
+#include "layout_check.hpp"
 
 namespace armodule {
 // Only our helper's address space is mapped. Source pages/permissions are never
@@ -35,12 +36,17 @@ inline bool ReadDiagnosticPage(Handle process, u64 address, void *output, std::s
     }
     virtmemUnlock(); return !unmap_result;
 }
-inline MemoryRecord CaptureMemoryCheckpoint(std::uint32_t phase,bool module_hash_verified) {
+inline MemoryRecord CaptureMemoryCheckpoint(std::uint32_t phase,bool module_hash_verified,LayoutRecord *layout=nullptr) {
     MemoryRecord r{}; r.phase=phase; r.now_ms=armTicksToNs(armGetSystemTick())/1000000;
+    std::array<RegionRecord,128> regions{}; std::uint32_t count{}; bool complete{};
     r.module_hash_verified=module_hash_verified;
     const unsigned required[]={0x74,0x75,0x76,0x7c};
     for (unsigned i=0;i<4;++i) if (envIsSyscallHinted(required[i])) r.syscall_hints|=1u<<i;
-    if (!module_hash_verified || r.syscall_hints!=15) { r.checksum=MemoryChecksum(r); return r; }
+    if (!module_hash_verified || r.syscall_hints!=15) {
+        r.checksum=MemoryChecksum(r);
+        if (layout) { *layout={};layout->report=r;layout->checksum=LayoutChecksum(*layout); }
+        return r;
+    }
     r.init_result=pmdmntInitialize();
     if (!r.init_result) {
         r.query_result=pmdmntGetProcessId(&r.pid,ModuleProgramId);
@@ -52,22 +58,40 @@ inline MemoryRecord CaptureMemoryCheckpoint(std::uint32_t phase,bool module_hash
                 r.state=0; r.state_result=svcGetProcessInfo(&r.state,process,ProcessInfoType_ProcessState);
                 r.state_valid=!r.state_result && r.state>=0 && r.state<=7;
                 // Enumerate metadata only, bounded to128 regions/39-bit space.
-                // Read only code with the exact text extent, then verify both
-                // fixed code bytes and GNU build note before reading the record.
+                // Capture actual metadata before considering any read. RX NSO
+                // code can be classified CodeMutable and regions may split/merge;
+                // exact extent/type3 was an unjustified admission assumption.
+                // Runtime code + build-note identity still precede record access.
                 u64 address=0; constexpr u64 limit=1ull<<39;
                 for (;r.regions<128 && address<limit;) {
                     ++r.regions;
                     MemoryInfo info{}; u32 page_info{};
                     r.memory_query_result=svcQueryProcessMemory(&info,&page_info,process,address);
-                    if (r.memory_query_result || info.addr>address || !info.size || info.addr>=limit ||
-                        info.size>limit-info.addr || info.addr+info.size<=address) break;
-                    address=info.addr+info.size;
-                    if (info.type!=MemType_CodeStatic || info.perm!=(Perm_R|Perm_X) || info.size!=TextExtent || info.attr) continue;
+                    if (r.memory_query_result || info.addr>address || !info.size || info.addr>=limit) break;
+                    // QueryProcessMemory can describe a trailing unmapped span
+                    // beyond the39-bit ceiling. Clip traversal, retain raw
+                    // metadata. Never allow an out-of-range mapped/code region.
+                    if (info.size>limit-info.addr && info.type!=0) break;
+                    const u64 end=info.size>=limit-info.addr?limit:info.addr+info.size;
+                    if (end<=address) break;
+                    address=end;
+                    auto &entry=regions[count++];
+                    entry={info.addr,info.size,info.type,info.attr,info.perm,0};
+                    if (info.type==MemType_CodeStatic || info.type==MemType_CodeMutable) entry.guards|=GuardCodeType;
+                    if (info.perm==(Perm_R|Perm_X)) entry.guards|=GuardRx;
+                    if (info.size>=0x2000 && info.size<=0x100000) entry.guards|=GuardExtent;
+                    if (!info.attr) entry.guards|=GuardAttributes;
+                    if (entry.guards==15) entry.guards|=GuardCandidate;
+                }
+                complete=address==limit && !r.memory_query_result;
+                for (std::uint32_t i=0;complete && i<count && r.candidates<8;++i) {
+                    const auto &entry=regions[i];
+                    if (!(entry.guards&GuardCandidate)) continue;
                     ++r.candidates;
                     std::array<unsigned char,64> code{};
-                    if (!ReadDiagnosticPage(process,info.addr+CodeOffset,code.data(),code.size(),r.code_map_result,r.code_unmap_result)) break;
+                    if (!ReadDiagnosticPage(process,entry.address+CodeOffset,code.data(),code.size(),r.code_map_result,r.code_unmap_result)) break;
                     if (code!=CodeFingerprint) continue;
-                    ++r.code_matches; r.base=info.addr; r.fingerprint_valid=1;
+                    ++r.code_matches; r.base=entry.address; r.fingerprint_valid=1;
                     std::array<unsigned char,36> note{};
                     if (!ReadDiagnosticPage(process,r.base+NoteOffset,note.data(),note.size(),r.note_map_result,r.note_unmap_result)) break;
                     r.build_note_valid=note==BuildNote;
@@ -84,6 +108,11 @@ inline MemoryRecord CaptureMemoryCheckpoint(std::uint32_t phase,bool module_hash
         if (process!=INVALID_HANDLE) r.close_result=svcCloseHandle(process);
         pmdmntExit();
     }
-    r.checksum=MemoryChecksum(r); return r;
+    r.checksum=MemoryChecksum(r);
+    if (layout) {
+        *layout={};layout->report=r;layout->count=count;layout->complete=complete;
+        layout->entries=regions;layout->checksum=LayoutChecksum(*layout);
+    }
+    return r;
 }
 }
