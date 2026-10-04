@@ -44,7 +44,8 @@ Result pmdmntGetJitDebugProcessIdList(u32 *count, u64 *pids, std::size_t capacit
 }
 bool envIsSyscallHinted(unsigned svc) { assert(svc == 0x7c); calls.push_back("hint"); return hint; }
 Result svcGetProcessInfo(s64 *state, Handle handle, ProcessInfoType type) {
-    assert(handle == 27 && type == ProcessInfoType_ProcessState); calls.push_back("state"); *state=returned_state; return state_rc;
+    assert(handle == 27 && type == ProcessInfoType_ProcessState); calls.push_back("state");
+    const u32 low=static_cast<u32>(returned_state); std::memcpy(state,&low,sizeof low); return state_rc;
 }
 Result svcCloseHandle(Handle handle) { assert(handle == 27); calls.push_back("close"); return close_rc; }
 u64 armGetSystemTick() { return 9000; }

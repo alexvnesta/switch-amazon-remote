@@ -45,6 +45,9 @@ inline StateRecord CaptureProcessState(std::uint32_t phase) {
                 record.syscall_hinted = envIsSyscallHinted(0x7c);
                 if (record.identity_matches && record.syscall_hinted && handle != INVALID_HANDLE) {
                     record.state_attempted = 1;
+                    // libnx's SVC wrapper stores w1 (4B) through an s64 pointer.
+                    // Zero the upper word instead of retaining the -1 sentinel.
+                    record.state = 0;
                     record.state_result = svcGetProcessInfo(&record.state, handle, ProcessInfoType_ProcessState);
                     record.state_valid = R_SUCCEEDED(record.state_result) && record.state >= 0 && record.state <= 7;
                 }
