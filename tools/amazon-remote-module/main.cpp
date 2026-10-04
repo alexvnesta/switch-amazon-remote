@@ -54,7 +54,7 @@ void ResultLog(const char *operation, Result rc) {
 bool Enabled() {
     constexpr char expected[] = "enable-experimental-module=1\n";
     char data[sizeof expected-1]{};
-    return armodule::ReadExact("sdmc:/config/amazon-remote-module/enable.txt", data) &&
+    return armodule::ReadExact(armodule::EnablePath, data) &&
         !std::memcmp(data, expected, sizeof data);
 }
 bool Target(BtdrvAddress &target) {
@@ -133,10 +133,12 @@ int main(int, char **) {
     const bool enabled = Enabled(); Checkpoint(armodule::StartupStage::Enable, enabled ? 0 : Invalid());
     if (!enabled) return 0; // Never abort boot for this optional module.
     start_ms = Now(); const auto instance = startup_record.instance;
-    log_healthy = log_file.Open("sdmc:/config/amazon-remote-module/module.log");
+    log_healthy = log_file.Open(armodule::LogPath);
     Checkpoint(armodule::StartupStage::Log, log_healthy ? 0 : Invalid());
     if (!log_healthy) return 0;
-    Log("Amazon Remote Module alpha.2 startup-diag1: Bluetooth commands disabled; neutral Y check only");
+    Log(armodule::StartupDiagnosticOnly ?
+        "Amazon Remote startup-diag1: Bluetooth commands disabled; neutral Y check only" :
+        "Amazon Remote navigation9: IDLE until operator A/ZL; bounded session, no boot scan/reconnect/wake");
     // Current public BTM-layout workaround has device evidence only on 22.5.0.
     Checkpoint(armodule::StartupStage::FirmwareGuard, hosversionGet() == MAKEHOSVERSION(22,5,0) ? 0 : Invalid());
     if (hosversionGet() != MAKEHOSVERSION(22,5,0)) { Log("Unsupported firmware: no Bluetooth or controller setup"); return 0; }
@@ -158,6 +160,9 @@ int main(int, char **) {
     std::uint64_t last_status = 0, last_clock = start_ms;
     const auto cleanup = [&] {
         const auto pad_result = controller.Stop();
+        const auto final_trace=backend.Trace(instance,Now());
+        if (final_trace.open_result!=armodule::HdlsNotAttempted)
+            (void)armodule::Publish(armodule::HdlsTemp,armodule::HdlsPath,final_trace);
         status.pad_cleanup_result = controller.CleanupError();
         if (!status.result && pad_result) status.result = pad_result;
         ResultLog("neutralize/detach owned pad", pad_result);
@@ -196,7 +201,7 @@ int main(int, char **) {
                 policy.Suspend(); awake = false; shutdown = decision.shutdown;
             } else if (decision.resume && !awake) {
                 awake = true; policy.Resume();
-                log_healthy = log_file.Open("sdmc:/config/amazon-remote-module/module.log");
+                log_healthy = log_file.Open(armodule::LogPath);
             }
             rc = pscPmModuleAcknowledge(&pm, state);
             if (R_FAILED(rc)) { if (awake) stop(rc); break; }
@@ -218,8 +223,7 @@ int main(int, char **) {
                 // No remote.Initialize, MC capture, scan, link or target-file access.
                 rc = log_healthy ? armodule::NeutralControllerCheck(controller) : Invalid();
                 const auto hdls_trace=backend.Trace(instance,Now());
-                (void)armodule::Publish("sdmc:/config/amazon-remote-module/hdls-backend.tmp",
-                    "sdmc:/config/amazon-remote-module/hdls-backend.bin",hdls_trace);
+                (void)armodule::Publish(armodule::HdlsTemp,armodule::HdlsPath,hdls_trace);
                 status.controller_check = unsigned(R_SUCCEEDED(rc) ? armodule::ControllerCheck::Passed : armodule::ControllerCheck::Failed);
                 status.pad_cleanup_result = controller.CleanupError();
                 ResultLog("operator neutral HDLS attach/detach; replies only, not navigation proof", rc);
@@ -252,7 +256,9 @@ int main(int, char **) {
             if (R_FAILED(rc) || !log_healthy) stop(R_FAILED(rc) ? rc : Invalid());
             else if (remote.Ready()) {
                 if (policy.Get() == armodule::State::Linking && policy.Ready()) {
-                    rc = controller.Start(); ResultLog("attach owned HDLS pad (device validation pending)", rc);
+                    rc = controller.Start(); ResultLog("attach owned HDLS pad (visible navigation validation pending)", rc);
+                    const auto hdls_trace=backend.Trace(instance,Now());
+                    if (!armodule::Publish(armodule::HdlsTemp,armodule::HdlsPath,hdls_trace) && !rc) rc=Invalid();
                     if (R_FAILED(rc)) stop(rc);
                 }
                 if (policy.Get() == armodule::State::Ready) {
@@ -286,7 +292,7 @@ int main(int, char **) {
             status.acknowledged_buttons = controller.LastAcknowledgedButtons();
             status.successful_writes = controller.SuccessfulWrites();
             status.pad_cleanup_result = controller.CleanupError();
-            const bool published = armodule::Publish("sdmc:/config/amazon-remote-module/status.tmp", armodule::StatusPath, status);
+            const bool published = armodule::Publish(armodule::StatusTemp, armodule::StatusPath, status);
             // Checkpoint once on first status or failure, not every500ms forever.
             if (!last_status || !published) Checkpoint(armodule::StartupStage::Status, published ? 0 : Invalid());
             if (!published) { stop(Invalid()); break; }

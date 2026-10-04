@@ -4,6 +4,9 @@
 #include "../protocol.hpp"
 #include "../io.hpp"
 #include "../startup.hpp"
+#ifdef ARMODULE_NAV9
+#include "../navigation_sdk.hpp"
+#endif
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -22,12 +25,17 @@ int main(int, char **) {
     armodule::StartupControlReport diagnostic{}, saved{};
     unsigned report_writes = 0; bool report_saved = false;
     bool released = false; const char *message = "No command sent. Module must be deliberately enabled first.";
+#ifdef ARMODULE_NAV9
+    armodule::ReleasedLaunchGate launch_gate;
+    armodule::NativeAttempt launch{};
+    message = "Release all buttons. A once, release ALL buttons for one second to launch IDLE.";
+#endif
     while (appletMainLoop()) {
         padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
         if (down & HidNpadButton_Plus) break;
         if (!(padGetButtons(&pad) & (HidNpadButton_A | HidNpadButton_ZL | HidNpadButton_X | HidNpadButton_Y))) released = true;
         armodule::Status status{};
-        const bool fresh = armodule::ReadExact(armodule::StatusPath, status) && armodule::FreshStatus(status, Now());
+        bool fresh = armodule::ReadExact(armodule::StatusPath, status) && armodule::FreshStatus(status, Now());
         if (!last_query || Now()-last_query >= 1000) {
             diagnostic = {}; diagnostic.now_ms = Now();
             auto result = pmdmntInitialize();
@@ -41,12 +49,21 @@ int main(int, char **) {
                 std::memcmp(&diagnostic.startup, &saved.startup, sizeof diagnostic.startup);
             if (changed && report_writes < 20) {
                 ++report_writes;
-                report_saved = armodule::Publish("sdmc:/config/amazon-remote-module/control-diag1.tmp",
-                    "sdmc:/config/amazon-remote-module/control-diag1.bin", diagnostic);
+                report_saved = armodule::Publish(armodule::ControlTemp, armodule::ControlPath, diagnostic);
                 saved = diagnostic;
             }
             last_query = diagnostic.now_ms;
         }
+#ifdef ARMODULE_NAV9
+        // Separate namespace plus a live PM query and matching early checkpoint.
+        fresh = fresh && !diagnostic.process_query_result && diagnostic.process_id &&
+            diagnostic.startup_valid && !diagnostic.startup.result &&
+            status.instance==diagnostic.startup.instance && diagnostic.startup.now_ms<=status.now_ms;
+        if (!fresh && launch_gate.Poll(Now(), down==HidNpadButton_A && padGetButtons(&pad)==HidNpadButton_A,
+                                      padGetButtons(&pad)==0)) {
+            message=armodule::RequestNavigationLaunch(launch);
+        }
+#endif
         const auto requested = down & (HidNpadButton_A | HidNpadButton_ZL | HidNpadButton_X | HidNpadButton_Y);
         if (requested && (released || (requested & HidNpadButton_X))) {
             // X is the stop command and wins over other simultaneous buttons.
@@ -67,7 +84,7 @@ int main(int, char **) {
                 else {
                     armodule::Command command{}; command.kind = unsigned(kind); command.instance = status.instance;
                     command.issued_ms = Now(); command.sequence = previous+1;
-                    if (armodule::Publish("sdmc:/config/amazon-remote-module/command.tmp", armodule::CommandPath, command)) {
+                    if (armodule::Publish(armodule::CommandTemp, armodule::CommandPath, command)) {
                         last_send = command.sequence; message = "Command published. Check state/log for actual acknowledgement.";
                     } else message = "Command publication failed. Existing temp file is preserved.";
                 }
@@ -76,8 +93,13 @@ int main(int, char **) {
         if (requested) released = false; // Require a fresh release before another physical command.
         if (!last_draw || Now()-last_draw >= 250 || requested) {
             consoleClear();
+#ifdef ARMODULE_NAV9
+            std::printf("Amazon Remote Navigation 9 - supervised test\n\n");
+            std::printf("No status: A once, release ALL buttons1s to launch IDLE\nIDLE: release, A arms60s capture; flash remote\nSCANNING and Link_READY=1: ZL once connects\nX: stop/release pad   +: exit UI (module remains)\n\n");
+#else
             std::printf("Amazon Remote Startup Check - alpha.2 diag1\n\n");
             std::printf("Y: one NEUTRAL pad attach/detach check (IDLE, no Bluetooth)\nA/ZL: DISABLED for startup diagnosis\nX: stop/release virtual controller   +: exit UI\n\n");
+#endif
             if (!diagnostic.process_query_result && diagnostic.process_id)
                 std::printf("PM: module process PRESENT, PID=%llu (not a health check)\n", static_cast<unsigned long long>(diagnostic.process_id));
             else std::printf("PM: no process confirmed, Result=%08lx\n", static_cast<unsigned long>(diagnostic.process_query_result));
@@ -97,7 +119,11 @@ int main(int, char **) {
             }
             else std::printf("No current module status. No Bluetooth action permitted.\n");
             std::printf("\n%s\n\n", message);
+#ifdef ARMODULE_NAV9
+            std::printf("One attempt,90s connected limit. No reconnect/autoboot.\nAfter READY: + exits; try D-pad/OK/Back on HOME.\nNo wake or microphone support is claimed.\n");
+#else
             std::printf("Startup diagnosis only. No Bluetooth/pairing commands.\nNo wake or microphone support is claimed.\n");
+#endif
             last_draw = Now();
         }
         consoleUpdate(nullptr); svcSleepThread(20000000);

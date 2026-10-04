@@ -5,11 +5,19 @@
 #include <type_traits>
 
 namespace armodule {
-// Temporary, supervised diagnostic revision, not a public release or BLE test.
+// Temporary, supervised revisions, not public releases.
+#ifdef ARMODULE_NAV9
+// Separately staged navigation candidate. No boot flag or automatic BLE action.
+inline constexpr bool StartupDiagnosticOnly = false;
+inline constexpr std::uint64_t ModuleProgramId = 0x010000000000a4d3;
+inline constexpr char StartupPath[] = "sdmc:/config/amazon-remote-nav9/startup.bin";
+inline constexpr char StartupFsPath[] = "/config/amazon-remote-nav9/startup.bin";
+#else
 inline constexpr bool StartupDiagnosticOnly = true;
 inline constexpr std::uint64_t ModuleProgramId = 0x0100000000a4d001;
 inline constexpr char StartupPath[] = "sdmc:/config/amazon-remote-module/startup-diag1.bin";
 inline constexpr char StartupFsPath[] = "/config/amazon-remote-module/startup-diag1.bin";
+#endif
 enum class StartupStage : std::uint32_t {
     Sm = 1, Fs, Sd, Mount, Settings, Firmware, Main, Enable, Log,
     FirmwareGuard, Psc, PscRegister, Status, Exit

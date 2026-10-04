@@ -5,9 +5,31 @@
 
 namespace armodule {
 inline constexpr std::uint32_t Magic = 0x41524d31, Version = 2;
+#ifdef ARMODULE_NAV9
+inline constexpr char Directory[] = "sdmc:/config/amazon-remote-nav9";
+inline constexpr char CommandPath[] = "sdmc:/config/amazon-remote-nav9/command.bin";
+inline constexpr char StatusPath[] = "sdmc:/config/amazon-remote-nav9/status.bin";
+inline constexpr char CommandTemp[] = "sdmc:/config/amazon-remote-nav9/command.tmp";
+inline constexpr char StatusTemp[] = "sdmc:/config/amazon-remote-nav9/status.tmp";
+inline constexpr char EnablePath[] = "sdmc:/config/amazon-remote-nav9/enable.txt";
+inline constexpr char LogPath[] = "sdmc:/config/amazon-remote-nav9/module.log";
+inline constexpr char HdlsPath[] = "sdmc:/config/amazon-remote-nav9/hdls-backend.bin";
+inline constexpr char HdlsTemp[] = "sdmc:/config/amazon-remote-nav9/hdls-backend.tmp";
+inline constexpr char ControlPath[] = "sdmc:/config/amazon-remote-nav9/control.bin";
+inline constexpr char ControlTemp[] = "sdmc:/config/amazon-remote-nav9/control.tmp";
+#else
 inline constexpr char Directory[] = "sdmc:/config/amazon-remote-module";
 inline constexpr char CommandPath[] = "sdmc:/config/amazon-remote-module/command.bin";
 inline constexpr char StatusPath[] = "sdmc:/config/amazon-remote-module/status.bin";
+inline constexpr char CommandTemp[] = "sdmc:/config/amazon-remote-module/command.tmp";
+inline constexpr char StatusTemp[] = "sdmc:/config/amazon-remote-module/status.tmp";
+inline constexpr char EnablePath[] = "sdmc:/config/amazon-remote-module/enable.txt";
+inline constexpr char LogPath[] = "sdmc:/config/amazon-remote-module/module.log";
+inline constexpr char HdlsPath[] = "sdmc:/config/amazon-remote-module/hdls-backend.bin";
+inline constexpr char HdlsTemp[] = "sdmc:/config/amazon-remote-module/hdls-backend.tmp";
+inline constexpr char ControlPath[] = "sdmc:/config/amazon-remote-module/control-diag1.bin";
+inline constexpr char ControlTemp[] = "sdmc:/config/amazon-remote-module/control-diag1.tmp";
+#endif
 enum class CommandKind : std::uint32_t { Arm = 1, Link = 2, Stop = 3, CheckController = 4 };
 enum class ControllerCheck : std::uint32_t { NotRun, Passed, Failed };
 enum class State : std::uint32_t { Idle, Scanning, Linking, Ready, Stopped, Suspended };
