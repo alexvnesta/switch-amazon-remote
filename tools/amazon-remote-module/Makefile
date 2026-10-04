@@ -34,6 +34,12 @@ build/launch-check.nacp: Makefile | build/exefs
 	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Launch Check" "switch-amazon-remote contributors" "0.2.0-a2-diag2" $@
 build/amazon-remote-launch-check.nro: build/launch-check.elf build/launch-check.nacp
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/launch-check.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
+build/state-check.elf: control/state_check.cpp state_sdk.hpp state_check.hpp startup.hpp io.hpp Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) control/state_check.cpp $(LIBS) -o $@
+build/state-check.nacp: Makefile | build/exefs
+	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote State Check" "switch-amazon-remote contributors" "0.2.0-a2-diag3" $@
+build/amazon-remote-state-check.nro: build/state-check.elf build/state-check.nacp
+	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/state-check.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
 build/exefs:
 	mkdir -p $@
 host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp tests/test_launch.cpp tests/test_launch_sdk.cpp tests/fake_sdk/switch.h hdls_backend.hpp controller.hpp protocol.hpp io.hpp config.hpp startup.hpp startup_storage.hpp launch_test.hpp launch_sdk.hpp $(SOURCE)/remote_decoder.hpp
@@ -48,5 +54,7 @@ host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp test
 	./build/test_launch
 	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -Itests/fake_sdk tests/test_launch_sdk.cpp -o build/test_launch_sdk
 	./build/test_launch_sdk
+	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -Itests/fake_sdk tests/test_state_sdk.cpp -o build/test_state_sdk
+	./build/test_state_sdk
 HOST_CXX ?= c++
 .PHONY: all host-test
