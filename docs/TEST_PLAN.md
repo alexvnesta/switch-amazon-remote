@@ -25,7 +25,21 @@ passive observer hashes and preserve backups. Builds do not install anything.
    `module.log` and status. If absent/stale, inspect launch/PSC/ACL results before
    any connection attempt. Do not broaden permissions or spoof ARUID blindly.
 
-## 2. One background-output test
+## 2. Neutral controller gate, before Bluetooth
+
+1. While fresh IDLE, press physical Y in the matching alpha.2 control NRO. Expect
+   Neutral_check=PASSED (service replies only), Pad_attached=0, cleanup result=0,
+   last ACK mask=0 and two successful Set replies. Only neutral attach/detach is
+   attempted; no remote pairing, advertisement or target-file setup is needed.
+2. Preserve module.log and status. There should be no Bluetooth capture/link log
+   from this check and no visible button-driven menu movement. Joy-Cons must keep
+   working. A success reply is not proof of navigation or controller coexistence.
+3. A second Y is ignored for this module instance. On failure, expect STOPPED,
+   a preserved error and no A/ZL retry. Collect diagnostics before another test.
+4. Only after this gate passes, proceed to the one explicit remote-output test.
+   A successful check leaves IDLE; it does not consume a Bluetooth link attempt.
+
+## 3. One background-output test
 
 1. Make remote flash; physical A arms one capture. Wait until `Link_READY=1`;
    physical ZL requests exactly one link. ZL before readiness must do nothing.
@@ -36,6 +50,9 @@ passive observer hashes and preserve backups. Builds do not install anything.
    Confirm/A, Back/B, Home/HOME and Menu/+ in HOME. Record visible behavior and
    logs; success replies alone are not system-navigation proof. Keep Joy-Cons
    usable throughout. Voice/media/app keys should have no unintended action.
+   Changed mapped inputs should produce HDLS ACK log lines; the last ACK mask
+   and successful-write count are shown in the control UI. These are service
+   diagnostics, not substitutes for observing the on-screen action.
 4. Verify press AND release: no drifting selection or held Home after release.
    Use control X to stop; expect neutralize/detach/release and no repeat/rearm.
    A forced10second continuous mapped hold must stop cleanly. Capture failures
@@ -44,7 +61,7 @@ passive observer hashes and preserve backups. Builds do not install anything.
    its durable pending marker and still requires fresh reboot/recovery for a new
    diagnostic session. Do not run the old probe simultaneously.
 
-## 3. Sleep/resume only after output and cleanup proof
+## 4. Sleep/resume only after output and cleanup proof
 
 1. Test actual Switch sleep while idle, then with the candidate pad attached.
    Monitor PSC request/ack ordering and ensure no stuck key or new Atmosphere

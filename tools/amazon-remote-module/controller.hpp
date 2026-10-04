@@ -54,21 +54,21 @@ public:
         session_ = true;
         rc = backend_.AttachDevice(); if (rc) return Fail(rc);
         device_ = true;
-        rc = backend_.Set(0); if (rc) return Fail(rc);
+        rc = Write(0); if (rc) return Fail(rc);
         last_ = 0; return 0;
     }
     std::uint32_t Update(std::uint32_t remote) {
         if (!device_ || failed_) return 1;
         const auto buttons = MapButtons(remote);
         if (buttons == last_) return 0;
-        const auto rc = backend_.Set(buttons);
+        const auto rc = Write(buttons);
         if (rc) return Fail(rc);
         last_ = buttons; return 0;
     }
     std::uint32_t Stop() {
         std::uint32_t first = 0;
         const auto check = [&](std::uint32_t rc) { if (rc && !first) first = rc; };
-        if (device_) { check(backend_.Set(0)); check(backend_.DetachDevice()); device_ = false; }
+        if (device_) { check(Write(0)); check(backend_.DetachDevice()); device_ = false; }
         if (session_) { check(backend_.ReleaseSession()); session_ = false; }
         if (open_) { backend_.Close(); open_ = false; }
         last_ = 0;
@@ -76,11 +76,28 @@ public:
         return cleanup_error_;
     }
     bool Attached() const { return device_; }
+    // Last successful Set reply, NOT proof of visible navigation or of the
+    // actual pad state after a failed cleanup. Keep a nonzero ACK on that failure.
+    std::uint64_t LastAcknowledgedButtons() const { return acknowledged_; }
+    std::uint64_t SuccessfulWrites() const { return writes_; }
+    std::uint32_t CleanupError() const { return cleanup_error_; }
 private:
+    std::uint32_t Write(std::uint64_t buttons) {
+        const auto rc = backend_.Set(buttons);
+        if (!rc) { acknowledged_ = buttons; ++writes_; }
+        return rc;
+    }
     std::uint32_t Fail(std::uint32_t rc) { failed_ = true; Stop(); return rc; }
     Backend &backend_;
     bool open_{}, session_{}, device_{}, failed_{};
-    std::uint64_t last_{};
+    std::uint64_t last_{}, acknowledged_{}, writes_{};
     std::uint32_t cleanup_error_{};
 };
+// Operator-only neutral attach/detach, independent of Bluetooth and configuration.
+// A successful result proves service replies only, never system navigation.
+template<class Controller> std::uint32_t NeutralControllerCheck(Controller &controller) {
+    const auto rc = controller.Start();
+    const auto cleanup = controller.Stop();
+    return rc ? rc : cleanup;
+}
 }

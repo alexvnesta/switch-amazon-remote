@@ -42,6 +42,12 @@ The public MissionControl observer integration is still required: unmodified
 stock MissionControl does **not** provide the custom IPC used by this project.
 This project is independent—not endorsed by Amazon, Nintendo or MissionControl.
 
+The intended end state is a native-feeling Atmosphere background module, with
+one-time setup and reliable target-only reconnection—not an app kept open.
+Alpha.2 adds a Bluetooth-free neutral-controller preflight and output/cleanup
+telemetry. These are test tools, not finished controller support. See the
+[native-experience plan](docs/NATIVE_EXPERIENCE.md) and its hardware proof gates.
+
 ## Build and test
 
 Portable checks need a C++20 compiler, Make and Python 3:

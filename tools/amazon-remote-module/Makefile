@@ -25,13 +25,16 @@ build/exefs.nsp: build/exefs/main build/exefs/main.npdm
 build/control.elf: control/main.cpp io.hpp protocol.hpp Makefile | build/exefs
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) control/main.cpp $(LIBS) -o $@
 build/control.nacp: Makefile | build/exefs
-	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Module Control" "switch-amazon-remote contributors" "0.2.0-candidate" $@
+	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Module Control" "switch-amazon-remote contributors" "0.2.0-alpha.2" $@
 build/amazon-remote-control.nro: build/control.elf build/control.nacp
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/control.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
 build/exefs:
 	mkdir -p $@
-host-test: tests/test_module.cpp controller.hpp protocol.hpp io.hpp config.hpp $(SOURCE)/remote_decoder.hpp
+host-test: tests/test_module.cpp tests/test_hdls.cpp tests/fake_sdk/switch.h hdls_backend.hpp controller.hpp protocol.hpp io.hpp config.hpp $(SOURCE)/remote_decoder.hpp
 	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer tests/test_module.cpp -o tests/test_module
 	./tests/test_module
+	mkdir -p build
+	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -Itests/fake_sdk tests/test_hdls.cpp -o build/test_hdls
+	./build/test_hdls
 HOST_CXX ?= c++
 .PHONY: all host-test

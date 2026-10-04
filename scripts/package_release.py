@@ -77,7 +77,7 @@ def package(output, image, libnx_commit):
     source = {name: (ROOT / name).read_bytes() for name in source_names}
     common_names = ["LICENSE", "NOTICE.md", "licenses/decoder-MIT.txt", "licenses/libnx-ISC.txt",
                     "docs/BUILD.md", "docs/COMPATIBILITY.md", "docs/MODULE.md", "docs/TEST_PLAN.md",
-                    "docs/RELEASING.md", "docs/releases/v" + version + ".md"]
+                    "docs/RELEASING.md", "docs/NATIVE_EXPERIENCE.md", "docs/releases/v" + version + ".md"]
     common = {name: source[name] for name in common_names}
     probe = (ROOT / "tools/amazon-remote-probe/amazon-remote-probe.nro").read_bytes()
     module = (ROOT / "tools/amazon-remote-module/build/exefs.nsp").read_bytes()

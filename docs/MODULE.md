@@ -1,4 +1,4 @@
-# Amazon remote background module: 0.2.0 candidate
+# Amazon remote background module: 0.2.0-alpha.2 candidate
 
 This is a local-built, **inactive, device-untested candidate**, not an installed
 remote driver. It isolates the device-proven probe0.1.10 transport from the new
@@ -37,6 +37,27 @@ hardware validation.
 - `control/main.cpp`: A arms, ZL requests one fresh-target link, X stops, + leaves
   the UI. Exiting the UI deliberately leaves the bounded background test running.
   It does not access Bluetooth or inject input itself.
+
+Alpha.2 adds **Y: neutral controller preflight**, available once while IDLE. The
+module attaches its owned virtual pad, writes only neutral input, and detaches it.
+This path does not open the remote transport, read a target address, arm MC
+capture, scan, pair or link. Successful service replies keep IDLE and permit the
+later explicit A/ZL test; an initialization or cleanup failure stops without
+retry. Startup still attaches nothing. A neutral check is not navigation proof.
+
+Status protocol v2 adds the neutral-check result, sticky pad-cleanup result,
+last successfully acknowledged output mask and count of successful Set replies.
+An unchanged mapped mask sends no duplicate output IPC. Changed successful
+outputs are logged, but ACKs are explicitly distinguished from visible behavior.
+If neutralization fails, the last nonzero ACK is retained rather than reporting
+that keys were successfully released. Pad_attached tracks local ownership, not
+proof that a failed detach removed the device. Use the matching alpha.2 control
+NRO: old protocol-v1 status/commands are rejected, not silently interpreted.
+
+Host tests now compile the **actual HDLS adapter** against a minimal fake SDK to
+check its aligned owned buffer, device/state requests, stage failures, neutral
+preflight, mapped press/release and cleanup. This complements, but cannot replace,
+real SDK compilation and device permission/lifecycle tests.
 
 The existing passive observerv5 remains required to see the remote's HID16
 advertisement. The candidate neither changes MissionControl nor uses its private
@@ -123,6 +144,9 @@ bundled; see BUILD.md for dependency pins and observer integration.
 
 Follow [TEST_PLAN.md](TEST_PLAN.md) during a supervised test. Background output is the next proof
 boundary; don't implement persistent connection retry around an unproven one.
+The intended daily-use experience and remaining proof gates are in
+[NATIVE_EXPERIENCE.md](NATIVE_EXPERIENCE.md). The control NRO is a development tool,
+not the intended everyday interface.
 
 ## Public references and reuse
 

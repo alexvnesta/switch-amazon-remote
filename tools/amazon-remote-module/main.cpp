@@ -111,7 +111,7 @@ int main(int, char **) {
     start_ms = Now(); const auto instance = armGetSystemTick();
     log_healthy = log_file.Open("sdmc:/config/amazon-remote-module/module.log");
     if (!log_healthy) return 0;
-    Log("Amazon Remote Module 0.2.0-candidate: explicit operator arm/link; 90sec input bound; no reconnect/wake/voice");
+    Log("Amazon Remote Module 0.2.0-alpha.2: neutral controller preflight; explicit arm/link; no reconnect/wake/voice");
     // Current public BTM-layout workaround has device evidence only on 22.5.0.
     if (hosversionGet() != MAKEHOSVERSION(22,5,0)) { Log("Unsupported firmware: no Bluetooth or controller setup"); return 0; }
     auto rc = pscmInitialize(); ResultLog("pscmInitialize", rc); if (R_FAILED(rc)) return 0;
@@ -129,13 +129,22 @@ int main(int, char **) {
     armodule::Status status{}; status.instance = instance;
     std::uint64_t last_status = 0, last_clock = start_ms;
     const auto cleanup = [&] {
-        ResultLog("neutralize/detach owned pad", controller.Stop());
+        const auto pad_result = controller.Stop();
+        status.pad_cleanup_result = controller.CleanupError();
+        if (!status.result && pad_result) status.result = pad_result;
+        ResultLog("neutralize/detach owned pad", pad_result);
         remote.Close();
         if (capture_owned && serviceIsActive(&mc)) ResultLog("end own capture", serviceDispatch(&mc, 65003));
         capture_owned = false; serviceClose(&mc); lease = {};
         status.link_ready = status.buttons = status.output_attached = 0;
+        return pad_result;
     };
-    const auto stop = [&](Result result) { status.result = result; cleanup(); policy.Stop(); };
+    const auto stop = [&](Result result) {
+        const auto pad_result = cleanup();
+        // A later successful X/Stop must not erase a recorded failure.
+        if (result || pad_result) status.result = result ? result : pad_result;
+        policy.Stop();
+    };
     const auto sighting = [&](amazon_remote::SightingWire &wire) {
         if (policy.Get() != armodule::State::Scanning || !serviceIsActive(&mc)) return false;
         auto result = ReadLease(mc, lease);
@@ -173,6 +182,14 @@ int main(int, char **) {
             status.last_sequence = command.sequence;
             if (std::remove(armodule::CommandPath) != 0) { stop(Invalid()); }
             else if (command.kind == unsigned(armodule::CommandKind::Stop)) stop(0);
+            else if (command.kind == unsigned(armodule::CommandKind::CheckController) && policy.CheckController()) {
+                // No remote.Initialize, MC capture, scan, link or target-file access.
+                rc = log_healthy ? armodule::NeutralControllerCheck(controller) : Invalid();
+                status.controller_check = unsigned(R_SUCCEEDED(rc) ? armodule::ControllerCheck::Passed : armodule::ControllerCheck::Failed);
+                status.pad_cleanup_result = controller.CleanupError();
+                ResultLog("operator neutral HDLS attach/detach; replies only, not navigation proof", rc);
+                if (R_FAILED(rc) || !log_healthy) stop(R_FAILED(rc) ? rc : Invalid());
+            }
             else if (command.kind == unsigned(armodule::CommandKind::Arm) && policy.Get() == armodule::State::Idle) {
                 if (!policy.Arm() || !log_healthy || Pending() || !Target(target)) rc = Invalid();
                 else rc = Preflight();
@@ -205,7 +222,20 @@ int main(int, char **) {
                 }
                 if (policy.Get() == armodule::State::Ready) {
                     if (!hold_guard.Accept(remote.Buttons(), Now())) { Log("Continuous held-input/clock watchdog: stop and neutralize"); stop(Invalid()); }
-                    else { rc = controller.Update(remote.Buttons()); if (R_FAILED(rc)) stop(rc); }
+                    else {
+                        const auto before = controller.SuccessfulWrites();
+                        rc = controller.Update(remote.Buttons());
+                        if (R_FAILED(rc)) stop(rc);
+                        else if (controller.SuccessfulWrites() != before) {
+                            char line[160]{};
+                            std::snprintf(line, sizeof line, "HDLS ACK remote=%08lx mapped=%016llx writes=%llu; visible navigation unverified",
+                                static_cast<unsigned long>(remote.Buttons()),
+                                static_cast<unsigned long long>(controller.LastAcknowledgedButtons()),
+                                static_cast<unsigned long long>(controller.SuccessfulWrites()));
+                            Log(line);
+                            if (!log_healthy) stop(Invalid());
+                        }
+                    }
                 }
             }
             if (policy.Get() == armodule::State::Scanning) {
@@ -218,6 +248,9 @@ int main(int, char **) {
             status.state = unsigned(policy.Get()); status.now_ms = Now(); status.capture_deadline = lease.deadline_boot_ms;
             status.buttons = policy.Get() == armodule::State::Ready ? remote.Buttons() : 0;
             status.output_attached = controller.Attached();
+            status.acknowledged_buttons = controller.LastAcknowledgedButtons();
+            status.successful_writes = controller.SuccessfulWrites();
+            status.pad_cleanup_result = controller.CleanupError();
             if (!armodule::Publish("sdmc:/config/amazon-remote-module/status.tmp", armodule::StatusPath, status)) { stop(Invalid()); break; }
             last_status = status.now_ms;
         }

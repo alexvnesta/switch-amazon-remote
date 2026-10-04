@@ -47,13 +47,16 @@ void Ownership() {
         OwnedController pad(backend);
         assert(!pad.Attached() && pad.Update(0) != 0);
         assert(pad.Start() == 0 && pad.Attached());
+        assert(pad.SuccessfulWrites() == 1 && pad.LastAcknowledgedButtons() == 0);
         assert(pad.Start() != 0);
         assert(pad.Update(amazon_remote::Confirm) == 0);
+        assert(pad.SuccessfulWrites() == 2 && pad.LastAcknowledgedButtons() == 1);
         const auto count = backend.states.size();
         assert(pad.Update(amazon_remote::Confirm) == 0 && backend.states.size() == count);
         assert(pad.Update(0) == 0 && backend.states.back() == 0);
         assert(pad.Update(amazon_remote::Home) == 0);
         assert(pad.Stop() == 0 && !pad.Attached() && backend.states.back() == 0);
+        assert(pad.SuccessfulWrites() == 5 && pad.LastAcknowledgedButtons() == 0 && pad.CleanupError() == 0);
         const auto calls = backend.calls;
         assert(pad.Stop() == 0 && backend.calls == calls);
     }
@@ -74,6 +77,26 @@ void Ownership() {
         assert(failed.order[failed.order.size()-3] == 5 && failed.order[failed.order.size()-2] == 6 && failed.order.back() == 7);
         const auto count = failed.calls; pad.Stop(); assert(count == failed.calls);
     }
+    // A failed neutral write must not overwrite the last successfully ACKed key.
+    FakePad stale; OwnedController held(stale);
+    assert(held.Start() == 0 && held.Update(amazon_remote::Confirm) == 0);
+    stale.fail_step = stale.calls + 1;
+    assert(held.Stop() == 42 && held.CleanupError() == 42);
+    assert(held.LastAcknowledgedButtons() == 1 && held.SuccessfulWrites() == 2);
+    assert(held.Stop() == 42 && held.Start() != 0);
+}
+void NeutralCheck() {
+    for (unsigned failure = 0; failure <= 7; ++failure) {
+        FakePad backend; backend.fail_step = failure;
+        OwnedController pad(backend);
+        assert(NeutralControllerCheck(pad) == (failure ? 42u : 0u));
+        assert(!pad.Attached());
+        for (auto buttons : backend.states) assert(buttons == 0);
+        if (!failure) {
+            assert(pad.SuccessfulWrites() == 2 && pad.LastAcknowledgedButtons() == 0);
+            assert(pad.Start() == 0); // Successful neutral check does not poison the later real session.
+        } else assert(pad.Start() != 0);
+    }
 }
 void Protocol() {
     Command c{}; c.instance = 100; c.issued_ms = 200; c.sequence = 1; c.kind = unsigned(CommandKind::Arm);
@@ -82,11 +105,11 @@ void Protocol() {
     assert(!ValidCommand(c,101,0,200) && !ValidCommand(c,100,1,200));
     assert(!ValidCommand(c,0,0,200));
     for (unsigned kind = 0; kind < 10000; ++kind) {
-        c.kind = kind; assert(ValidCommand(c,100,0,200) == (kind >= 1 && kind <= 3));
+        c.kind = kind; assert(ValidCommand(c,100,0,200) == (kind >= 1 && kind <= 4));
     }
     c.kind = 1; c.reserved = 1; assert(!ValidCommand(c,100,0,200)); c.reserved = 0;
     c.magic ^= 1; assert(!ValidCommand(c,100,0,200)); c.magic ^= 1;
-    c.version = 2; assert(!ValidCommand(c,100,0,200)); c.version = 1;
+    c.version = 1; assert(!ValidCommand(c,100,0,200)); c.version = Version;
     c.sequence = 0; assert(!ValidCommand(c,100,0,200)); c.sequence = 1;
     c.issued_ms = 0; assert(!ValidCommand(c,100,0,200));
     c.issued_ms = std::numeric_limits<std::uint64_t>::max();
@@ -96,13 +119,17 @@ void Protocol() {
     s.state = 6; assert(!FreshStatus(s,200)); s.state = 0;
     s.link_ready = 2; assert(!FreshStatus(s,200)); s.link_ready = 0;
     s.output_attached = 2; assert(!FreshStatus(s,200)); s.output_attached = 0;
+    s.controller_check = 3; assert(!FreshStatus(s,200)); s.controller_check = 0;
+    s.version = 1; assert(!FreshStatus(s,200)); s.version = Version;
     s.reserved = 1; assert(!FreshStatus(s,200));
 }
 void Policy() {
     SessionPolicy p;
     assert(p.Get() == State::Idle && !p.Active());
+    assert(p.CheckController() && !p.CheckController() && p.Get() == State::Idle && !p.Active());
     assert(!p.Link(true) && !p.Ready());
     assert(p.Arm() && !p.Arm() && p.Active());
+    assert(!p.CheckController());
     assert(!p.Link(false) && p.Get() == State::Scanning);
     assert(p.Link(true) && !p.Link(true));
     assert(p.Ready() && !p.Ready() && p.Get() == State::Ready);
@@ -114,6 +141,7 @@ void Policy() {
         if (boundary > 1) stage.Link(true);
         if (boundary > 2) stage.Ready();
         stage.Stop(); assert(!stage.Active() && !stage.Arm() && !stage.Ready());
+        assert(!stage.CheckController());
         stage.Suspend(); stage.Resume(); assert(stage.Get() == State::Stopped && !stage.Arm());
     }
     InputHoldGuard guard;
@@ -169,6 +197,6 @@ void Configuration() {
     }
 }
 int main() {
-    Mapping(); Ownership(); Protocol(); Policy(); FileProtocol(); Configuration();
-    std::puts("PASS: all 65536 mappings, owned-pad init/cleanup failures, freshness/replay/bounds, policy/power/hold guards and exact-length Horizon-style file publication");
+    Mapping(); Ownership(); NeutralCheck(); Protocol(); Policy(); FileProtocol(); Configuration();
+    std::puts("PASS: all 65536 mappings, neutral-only preflight, sticky cleanup/ACK telemetry, owned-pad failures, versioned freshness/replay, policy/power/hold guards and Horizon-style publication");
 }
