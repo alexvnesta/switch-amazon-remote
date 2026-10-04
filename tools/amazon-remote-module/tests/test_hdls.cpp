@@ -1,18 +1,50 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "../hdls_backend.hpp"
+#include "../kernel_heap.hpp"
 #include <cassert>
 #include <vector>
 #include <cstdio>
+#include <algorithm>
 namespace {
 unsigned fail_step{}, calls{};
+Result memory_query_result{},heap_result{};
+unsigned memory_type=MemType_Heap,memory_permission=Perm_Rw,memory_attribute{},alloc_calls{},free_calls{},query_calls{};
+bool allocation_failure{}; std::size_t region_size=4096;
+void *heap_base=reinterpret_cast<void *>(0x100000);
+std::vector<void *> live;
 std::vector<unsigned> order;
 std::vector<std::uint64_t> outputs;
 Result Call(unsigned operation) { order.push_back(operation); return ++calls == fail_step ? 42 : 0; }
-void Reset(unsigned failure) { fail_step=failure; calls=0; order.clear(); outputs.clear(); }
+void Reset(unsigned failure) {
+    // Simulates kernel reclaim at process exit, not backend reuse of a
+    // quarantined transfer page. ASAN must not hide leaked host allocations.
+    for (auto *p:live) std::free(p);
+    live.clear(); fail_step=failure; calls=0; order.clear(); outputs.clear();
+    memory_query_result=heap_result=0; memory_type=MemType_Heap;memory_permission=Perm_Rw;memory_attribute=0;
+    alloc_calls=free_calls=query_calls=0;allocation_failure=false;region_size=4096;
+}
+void *Allocate(std::size_t alignment,std::size_t size) {
+    assert(alignment==4096 && size==4096); ++alloc_calls;
+    if (allocation_failure) return nullptr;
+    auto *p=std::aligned_alloc(alignment,size); assert(p); live.push_back(p);
+    std::memset(p,0xff,size); return p;
+}
+void Free(void *p) {
+    const auto it=std::find(live.begin(),live.end(),p); assert(it!=live.end());
+    live.erase(it); ++free_calls; std::free(p);
+}
+}
+Result svcSetHeapSize(void **out,u64 size) { assert(size==armodule::KernelHeapSize); *out=heap_base; return heap_result; }
+Result svcQueryMemory(MemoryInfo *m,u32 *page,u64 addr) {
+    ++query_calls; assert(!live.empty() && addr==reinterpret_cast<std::uintptr_t>(live.back()));
+    m->addr=addr; m->size=region_size; m->type=memory_type; m->perm=memory_permission;m->attr=memory_attribute;
+    *page=0;return memory_query_result;
 }
 Result hiddbgInitialize() { return Call(1); }
 Result hiddbgAttachHdlsWorkBuffer(HiddbgHdlsSessionId *out, void *buffer, std::size_t size) {
     assert(size == 4096 && reinterpret_cast<std::uintptr_t>(buffer) % 4096 == 0);
+    assert(std::find(live.begin(),live.end(),buffer)!=live.end() && query_calls==alloc_calls);
+    for (unsigned i=0;i<4096;++i) assert(static_cast<unsigned char *>(buffer)[i]==0);
     const auto result=Call(2); if (!result) out->id=17; return result;
 }
 Result hiddbgAttachHdlsVirtualDevice(HiddbgHdlsHandle *out, const HiddbgHdlsDeviceInfo *info) {
@@ -30,14 +62,19 @@ void hiddbgExit() { Call(7); }
 int main() {
     for (unsigned failure=0; failure<=7; ++failure) {
         Reset(failure);
-        armodule::HdlsBackend backend; armodule::OwnedController controller(backend);
+        armodule::HdlsBackend backend(Allocate,Free); armodule::OwnedController controller(backend);
         assert(armodule::NeutralControllerCheck(controller) == (failure ? 42u : 0u));
         assert(!controller.Attached());
         for (auto buttons : outputs) assert(!buttons);
         if (!failure) assert((order == std::vector<unsigned>{1,2,3,4,4,5,6,7}));
+        const auto trace=backend.Trace(100,200);
+        assert(armodule::ValidHdlsTrace(trace));
+        if (!failure) assert(trace.freed==1 && !trace.quarantined && trace.set_calls==2 && trace.first_set_result==0 && trace.last_set_result==0);
+        if (failure==2 || failure==7) assert(trace.quarantined==1 && !free_calls);
+        if (failure) { const auto count=calls; assert(controller.Start()==1 && calls==count); }
     }
     Reset(0);
-    armodule::HdlsBackend backend; armodule::OwnedController controller(backend);
+    armodule::HdlsBackend backend(Allocate,Free); armodule::OwnedController controller(backend);
     assert(controller.Start()==0);
     assert(controller.Update(amazon_remote::Confirm | amazon_remote::Home)==0);
     assert(outputs.back() == (HidNpadButton_A | HiddbgNpadButton_Home));
@@ -45,5 +82,36 @@ int main() {
     assert(controller.Update(amazon_remote::Confirm | amazon_remote::Home)==0 && calls==count);
     assert(controller.Update(0)==0 && outputs.back()==0);
     assert(controller.Stop()==0 && !controller.Attached());
-    std::puts("PASS actual HDLS adapter: aligned owned buffer, virtual-device request, neutral preflight/failures, mapped press-release and cleanup. NOT hardware proof.");
+    auto trace=backend.Trace(100,200); assert(trace.freed && !trace.quarantined && free_calls==1 && live.empty());
+    trace.checksum++; assert(!armodule::ValidHdlsTrace(trace));
+    fail_step=calls+2; // next Open succeeds, next transfer attach fails
+    assert(controller.Start()==42);
+    trace=backend.Trace(100,201);
+    assert(trace.quarantined && !trace.freed && free_calls==1 && live.size()==1);
+    assert(backend.Open()==MAKERESULT(Module_Libnx,LibnxError_AlreadyInitialized));
+    Reset(0); allocation_failure=true;
+    { armodule::HdlsBackend b(Allocate,Free); armodule::OwnedController c(b);
+      assert(c.Start()==MAKERESULT(Module_Libnx,LibnxError_OutOfMemory) && !query_calls && !free_calls);
+      assert(c.Start()==1 && alloc_calls==1); }
+    for (const unsigned type:{3u,4u,11u}) {
+        Reset(0);memory_type=type;
+        armodule::HdlsBackend b(Allocate,Free); armodule::OwnedController c(b);
+        assert(c.Start()==KERNELRESULT(InvalidMemoryState) && free_calls==1);
+        assert((order==std::vector<unsigned>{1,7})); // never submitted ineligible memory
+    }
+    for (unsigned invalid=0;invalid<4;++invalid) {
+        Reset(0);
+        if (invalid==0) memory_query_result=39;
+        if (invalid==1) memory_permission=Perm_R;
+        if (invalid==2) memory_attribute=1;
+        if (invalid==3) region_size=4095;
+        armodule::HdlsBackend b(Allocate,Free); armodule::OwnedController c(b);
+        assert(c.Start()==(invalid==0?39u:KERNELRESULT(InvalidMemoryState)) && free_calls==1);
+        assert((order==std::vector<unsigned>{1,7}));
+    }
+    Reset(0); void *start{},*end{};
+    assert(!armodule::InitializeKernelHeap(start,end) && start==heap_base && static_cast<unsigned char *>(end)-static_cast<unsigned char *>(start)==armodule::KernelHeapSize);
+    heap_result=77; assert(armodule::InitializeKernelHeap(start,end)==77 && !start && !end);
+    Reset(0);
+    std::puts("PASS HDLS real-heap allocation/query guards, neutral replies, every failure stage, cleanup/quarantine, one-shot latch and kernel heap setup. NOT hardware proof.");
 }

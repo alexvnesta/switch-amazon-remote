@@ -14,14 +14,22 @@
 #include <cstring>
 #include <cerrno>
 #include <sys/stat.h>
+#include "kernel_heap.hpp"
+
+namespace { constinit Result heap_initialization{}; }
 
 extern "C" {
 u32 __nx_applet_type = AppletType_None;
 u32 __nx_fs_num_sessions = 1;
 void __libnx_initheap() {
-    alignas(16) static char heap[0x80000];
     extern void *fake_heap_start, *fake_heap_end;
-    fake_heap_start = heap; fake_heap_end = heap + sizeof heap;
+    heap_initialization=armodule::InitializeKernelHeap(fake_heap_start,fake_heap_end);
+    // Keep enough diagnostic-only memory to record a failed heap request.
+    // main refuses controller/Bluetooth setup if the real heap was not created.
+    if (heap_initialization) {
+        alignas(16) static char fallback[0x80000];
+        fake_heap_start=fallback; fake_heap_end=fallback+sizeof fallback;
+    }
 }
 }
 namespace {
@@ -129,7 +137,8 @@ extern "C" void __appExit() {
 int main(int, char **) {
     // Preserve the failing early checkpoint on init failure instead of hiding it.
     if (R_FAILED(initialization)) return 0;
-    Checkpoint(armodule::StartupStage::Main, 0);
+    Checkpoint(armodule::StartupStage::Main, heap_initialization);
+    if (heap_initialization) return 0;
     const bool enabled = Enabled(); Checkpoint(armodule::StartupStage::Enable, enabled ? 0 : Invalid());
     if (!enabled) return 0; // Never abort boot for this optional module.
     start_ms = Now(); const auto instance = startup_record.instance;
@@ -217,6 +226,9 @@ int main(int, char **) {
             else if (command.kind == unsigned(armodule::CommandKind::CheckController) && policy.CheckController()) {
                 // No remote.Initialize, MC capture, scan, link or target-file access.
                 rc = log_healthy ? armodule::NeutralControllerCheck(controller) : Invalid();
+                const auto hdls_trace=backend.Trace(instance,Now());
+                (void)armodule::Publish("sdmc:/config/amazon-remote-module/hdls-backend.tmp",
+                    "sdmc:/config/amazon-remote-module/hdls-backend.bin",hdls_trace);
                 status.controller_check = unsigned(R_SUCCEEDED(rc) ? armodule::ControllerCheck::Passed : armodule::ControllerCheck::Failed);
                 status.pad_cleanup_result = controller.CleanupError();
                 ResultLog("operator neutral HDLS attach/detach; replies only, not navigation proof", rc);

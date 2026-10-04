@@ -66,6 +66,22 @@ build/launch-fix.nacp: Makefile | build/exefs
 	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Launch Fix" "switch-amazon-remote contributors" "0.2.0-a2-diag6" $@
 build/amazon-remote-launch-fix.nro: build/launch-fix.elf build/launch-fix.nacp
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/launch-fix.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
+build/native-hdls.elf: native_hdls.cpp native_hdls.hpp hdls_backend.hpp hdls_trace.hpp controller.hpp kernel_heap.hpp io.hpp Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) native_hdls.cpp $(LIBS) -o $@
+build/native-hdls-exefs/main: build/native-hdls.elf
+	mkdir -p build/native-hdls-exefs
+	$(DEVKITPRO)/tools/bin/elf2nso $< $@
+build/native-hdls-exefs/main.npdm: module-native-hdls.json
+	mkdir -p build/native-hdls-exefs
+	$(DEVKITPRO)/tools/bin/npdmtool $< $@
+build/native-hdls-exefs.nsp: build/native-hdls-exefs/main build/native-hdls-exefs/main.npdm
+	$(DEVKITPRO)/tools/bin/build_pfs0 build/native-hdls-exefs $@
+build/native-pad-check.elf: control/native_hdls_check.cpp native_hdls.hpp native_identity.hpp native_hdls_sdk.hpp launch_fix_sdk.hpp launch_fix.hpp io.hpp Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) control/native_hdls_check.cpp $(LIBS) -o $@
+build/native-pad-check.nacp: Makefile | build/exefs
+	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Native Pad Check" "switch-amazon-remote contributors" "0.2.0-a2-diag7" $@
+build/amazon-remote-native-pad-check.nro: build/native-pad-check.elf build/native-pad-check.nacp
+	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/native-pad-check.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
 build/exefs:
 	mkdir -p $@
 host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp tests/test_launch.cpp tests/test_launch_sdk.cpp tests/fake_sdk/switch.h hdls_backend.hpp controller.hpp protocol.hpp io.hpp config.hpp startup.hpp startup_storage.hpp launch_test.hpp launch_sdk.hpp $(SOURCE)/remote_decoder.hpp
@@ -86,5 +102,7 @@ host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp test
 	./build/test_memory_sdk
 	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -Itests/fake_sdk tests/test_launch_fix.cpp -o build/test_launch_fix
 	./build/test_launch_fix
+	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -Itests/fake_sdk tests/test_native_hdls.cpp -o build/test_native_hdls
+	./build/test_native_hdls
 HOST_CXX ?= c++
 .PHONY: all host-test

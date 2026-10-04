@@ -5,6 +5,10 @@
 #include <cstddef>
 #include <cstdint>
 using Result = std::uint32_t;
+inline constexpr unsigned Module_Libnx=345,LibnxError_OutOfMemory=2,LibnxError_AlreadyInitialized=7;
+#define MAKERESULT(module,description) (((module)&0x1ff)|(((description)&0x1fff)<<9))
+#define KERNELRESULT(description) MAKERESULT(1,KernelError_##description)
+inline constexpr unsigned KernelError_InvalidMemoryState=106;
 inline constexpr std::uint64_t HidNpadButton_A=1ull<<0, HidNpadButton_B=1ull<<1,
     HidNpadButton_Plus=1ull<<10, HidNpadButton_Left=1ull<<12, HidNpadButton_Up=1ull<<13,
     HidNpadButton_Right=1ull<<14, HidNpadButton_Down=1ull<<15, HiddbgNpadButton_Home=1ull<<18;
@@ -70,6 +74,9 @@ Result svcGetProcessInfo(s64 *, Handle, ProcessInfoType);
 Result svcCloseHandle(Handle);
 struct MemoryInfo { u64 addr{},size{}; u32 type{},attr{},perm{}; };
 inline constexpr unsigned MemType_CodeStatic=3,MemType_CodeMutable=4,Perm_R=1,Perm_X=4;
+inline constexpr unsigned MemType_Heap=5,Perm_Rw=3;
+Result svcQueryMemory(MemoryInfo *,u32 *,u64);
+Result svcSetHeapSize(void **,u64);
 struct VirtmemReservation {};
 void virtmemLock();
 void virtmemUnlock();
