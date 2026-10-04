@@ -75,8 +75,11 @@ bool RotatingLog::Open(const char *path) {
     // Old unbounded builds may have left oversized logs. Reset only these exact
     // three log slots, rather than silently retaining unbounded old history.
     for (unsigned slot = 0; slot <= BackupCount; ++slot) {
-        char name[sizeof path_];
-        if (slot) std::snprintf(name, sizeof name, "%s.%u", path_, slot);
+        char name[sizeof path_ + 3];
+        if (slot) {
+            const auto length = std::snprintf(name, sizeof name, "%s.%u", path_, slot);
+            if (length < 0 || static_cast<std::size_t>(length) >= sizeof name) return false;
+        }
         else std::strcpy(name, path_);
         struct stat info{};
         if (stat(name, &info) != 0) { if (errno != ENOENT) return false; continue; }

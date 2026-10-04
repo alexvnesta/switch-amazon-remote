@@ -174,7 +174,9 @@ void serviceClose(Service *s) { assert(s->id==80); s->id=0; ++f.driver_closes; }
 bool hosversionBefore(unsigned,unsigned,unsigned) { return false; }
 Result smGetService(Service *s,const char *name) {
     assert(std::string(name)=="btdrv" && !s->id); ++f.driver_opens;
-    if(f.scenario==DriverOpenError) return Invalid(); s->id=80; return 0;
+    if(f.scenario==DriverOpenError) return Invalid();
+    s->id=80;
+    return 0;
 }
 Result FakeServiceDispatch(Service *s,u32 cmd,const void *input,std::size_t input_size,void *output,std::size_t output_size) {
     assert(s->id==80 && output_size==sizeof(CachedCharacteristicOut));
@@ -227,7 +229,8 @@ Result btmuBleGetConnectionState(BtdrvBleConnectionInfo *info,u8 count,u8 *total
         f.delayed=true; f.now+=90000;
     }
     assert(count>=1); *total=f.connected ? 1 : 0;
-    if(f.connected) info[0]={4,f.address,{}}; return 0;
+    if(f.connected) info[0]={4,f.address,{}};
+    return 0;
 }
 Result btmuGetBleScanResultsForGeneral(BtdrvBleScanResult*,u8,u8 *total) { *total=0; return 0; }
 Result btmuGetBleScanResultsForSmartDevice(BtdrvBleScanResult*,u8,u8 *total) { *total=0; return 0; }
