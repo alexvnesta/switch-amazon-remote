@@ -3,7 +3,9 @@
 #include <switch.h>
 #include "../protocol.hpp"
 #include "../io.hpp"
+#include "../startup.hpp"
 #include <cstdio>
+#include <cstring>
 #include <limits>
 namespace {
 std::uint64_t Now() { return armTicksToNs(armGetSystemTick()) / 1000000; }
@@ -16,6 +18,9 @@ int main(int, char **) {
     consoleInit(nullptr);
     PadState pad; padConfigureInput(1, HidNpadStyleSet_NpadStandard); padInitializeDefault(&pad);
     std::uint64_t last_send = 0, last_draw = 0;
+    std::uint64_t last_query = 0;
+    armodule::StartupControlReport diagnostic{}, saved{};
+    unsigned report_writes = 0; bool report_saved = false;
     bool released = false; const char *message = "No command sent. Module must be deliberately enabled first.";
     while (appletMainLoop()) {
         padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
@@ -23,6 +28,25 @@ int main(int, char **) {
         if (!(padGetButtons(&pad) & (HidNpadButton_A | HidNpadButton_ZL | HidNpadButton_X | HidNpadButton_Y))) released = true;
         armodule::Status status{};
         const bool fresh = armodule::ReadExact(armodule::StatusPath, status) && armodule::FreshStatus(status, Now());
+        if (!last_query || Now()-last_query >= 1000) {
+            diagnostic = {}; diagnostic.now_ms = Now();
+            auto result = pmdmntInitialize();
+            if (R_SUCCEEDED(result)) { result = pmdmntGetProcessId(&diagnostic.process_id, armodule::ModuleProgramId); pmdmntExit(); }
+            diagnostic.process_query_result = result;
+            diagnostic.startup_valid = armodule::ReadExact(armodule::StartupPath, diagnostic.startup) && armodule::ValidStartup(diagnostic.startup);
+            if (!diagnostic.startup_valid) diagnostic.startup = {};
+            // Bounded, module-owned evidence for FTP retrieval; no launch API.
+            const bool changed = !report_writes || diagnostic.process_query_result != saved.process_query_result ||
+                diagnostic.process_id != saved.process_id || diagnostic.startup_valid != saved.startup_valid ||
+                std::memcmp(&diagnostic.startup, &saved.startup, sizeof diagnostic.startup);
+            if (changed && report_writes < 20) {
+                ++report_writes;
+                report_saved = armodule::Publish("sdmc:/config/amazon-remote-module/control-diag1.tmp",
+                    "sdmc:/config/amazon-remote-module/control-diag1.bin", diagnostic);
+                saved = diagnostic;
+            }
+            last_query = diagnostic.now_ms;
+        }
         const auto requested = down & (HidNpadButton_A | HidNpadButton_ZL | HidNpadButton_X | HidNpadButton_Y);
         if (requested && (released || (requested & HidNpadButton_X))) {
             // X is the stop command and wins over other simultaneous buttons.
@@ -30,6 +54,7 @@ int main(int, char **) {
                 (requested & HidNpadButton_A) ? armodule::CommandKind::Arm :
                 (requested & HidNpadButton_Y) ? armodule::CommandKind::CheckController : armodule::CommandKind::Link;
             const bool allowed = fresh &&
+                (!armodule::StartupDiagnosticOnly || kind == armodule::CommandKind::Stop || kind == armodule::CommandKind::CheckController) &&
                 (kind == armodule::CommandKind::Stop ||
                  (kind == armodule::CommandKind::Arm && status.state == unsigned(armodule::State::Idle)) ||
                  (kind == armodule::CommandKind::CheckController && status.state == unsigned(armodule::State::Idle) &&
@@ -51,8 +76,16 @@ int main(int, char **) {
         if (requested) released = false; // Require a fresh release before another physical command.
         if (!last_draw || Now()-last_draw >= 250 || requested) {
             consoleClear();
-            std::printf("Amazon Remote Module Control 0.2.0-alpha.2\n\n");
-            std::printf("Y: one NEUTRAL pad attach/detach check (IDLE, no Bluetooth)\nA: one capture/scan per boot   ZL: one fresh-target link\nX: stop/release virtual controller   +: exit UI (module continues)\n\n");
+            std::printf("Amazon Remote Startup Check - alpha.2 diag1\n\n");
+            std::printf("Y: one NEUTRAL pad attach/detach check (IDLE, no Bluetooth)\nA/ZL: DISABLED for startup diagnosis\nX: stop/release virtual controller   +: exit UI\n\n");
+            if (!diagnostic.process_query_result && diagnostic.process_id)
+                std::printf("PM: module process PRESENT, PID=%llu (not a health check)\n", static_cast<unsigned long long>(diagnostic.process_id));
+            else std::printf("PM: no process confirmed, Result=%08lx\n", static_cast<unsigned long>(diagnostic.process_query_result));
+            if (diagnostic.startup_valid) std::printf("Saved startup: %s Result=%08lx\nCheckpoint belongs to live status instance: %s\n",
+                armodule::StartupName(diagnostic.startup.stage), static_cast<unsigned long>(diagnostic.startup.result),
+                fresh && status.instance == diagnostic.startup.instance ? "YES" : "UNCONFIRMED (may be an earlier boot)");
+            else std::printf("No valid early SD checkpoint. Loader/SM/FS remain unresolved.\n");
+            std::printf("FTP diagnostic snapshot: %s\n\n", report_saved ? "SAVED" : "NOT SAVED");
             if (fresh) {
                 constexpr const char *checks[] = {"NOT RUN", "PASSED (service replies only)", "FAILED"};
                 std::printf("State=%s Result=%08lx Link_READY=%u Pad_attached=%u\nRemote_buttons=%08lx Acknowledged_sequence=%llu\n",
@@ -64,7 +97,7 @@ int main(int, char **) {
             }
             else std::printf("No current module status. No Bluetooth action permitted.\n");
             std::printf("\n%s\n\n", message);
-            std::printf("90-second bounded input test; no automatic reconnect.\nReboot/recovery required after EVERY attempted link.\nNo wake or microphone support is claimed.\n");
+            std::printf("Startup diagnosis only. No Bluetooth/pairing commands.\nNo wake or microphone support is claimed.\n");
             last_draw = Now();
         }
         consoleUpdate(nullptr); svcSleepThread(20000000);

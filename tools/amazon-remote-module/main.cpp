@@ -9,6 +9,7 @@
 #include "io.hpp"
 #include "protocol.hpp"
 #include "config.hpp"
+#include "startup_storage.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
@@ -25,6 +26,8 @@ void __libnx_initheap() {
 }
 namespace {
 Result initialization{}; bool sm_open{}, fs_open{}, mounted{};
+constinit armodule::StartupRecord startup_record{};
+FsFileSystem startup_fs{}; bool startup_fs_open{};
 amazon_remote::RotatingLog log_file;
 bool log_healthy{};
 static_assert(PscPmState_Awake == 0 && PscPmState_ReadyAwaken == 1 && PscPmState_ReadySleep == 2);
@@ -32,6 +35,13 @@ static_assert(PscPmState_ReadySleepCritical == 3 && PscPmState_ReadyAwakenCritic
 std::uint64_t start_ms{};
 std::uint64_t Now() { return armTicksToNs(armGetSystemTick()) / 1000000; }
 Result Invalid() { return MAKERESULT(Module_Libnx, LibnxError_BadInput); }
+void Checkpoint(armodule::StartupStage stage, Result result) {
+    startup_record.stage = unsigned(stage); startup_record.result = result;
+    startup_record.now_ms = Now(); startup_record.checksum = armodule::StartupChecksum(startup_record);
+    // Earlier SM/FS failures cannot be persisted without an SD service. The
+    // companion's read-only PM query covers process presence, not that error.
+    if (startup_fs_open) (void)armodule::WriteStartup(startup_fs, startup_record);
+}
 void Log(const char *message) {
     char line[amazon_remote::RotatingLog::LineLimit]{};
     amazon_remote::FormatLogLine(line, sizeof line, start_ms, Now(), message);
@@ -92,31 +102,49 @@ bool LiveLease(const amazon_remote::CaptureLeaseWire &lease, std::uint64_t now) 
 }
 }
 extern "C" void __appInit() {
-    initialization = smInitialize(); sm_open = R_SUCCEEDED(initialization); if (!sm_open) return;
-    initialization = setsysInitialize(); if (R_FAILED(initialization)) return;
+    startup_record.instance = armGetSystemTick();
+    initialization = smInitialize(); sm_open = R_SUCCEEDED(initialization);
+    Checkpoint(armodule::StartupStage::Sm, initialization); if (!sm_open) return;
+    // Establish raw SD diagnostics before settings/devoptab initialization.
+    initialization = fsInitialize(); fs_open = R_SUCCEEDED(initialization);
+    Checkpoint(armodule::StartupStage::Fs, initialization); if (!fs_open) return;
+    initialization = fsOpenSdCardFileSystem(&startup_fs); startup_fs_open = R_SUCCEEDED(initialization);
+    Checkpoint(armodule::StartupStage::Sd, initialization); if (!startup_fs_open) return;
+    initialization = fsdevMountSdmc(); mounted = R_SUCCEEDED(initialization);
+    Checkpoint(armodule::StartupStage::Mount, initialization); if (!mounted) return;
+    initialization = setsysInitialize();
+    Checkpoint(armodule::StartupStage::Settings, initialization); if (R_FAILED(initialization)) return;
     SetSysFirmwareVersion version{}; initialization = setsysGetFirmwareVersion(&version); setsysExit();
+    Checkpoint(armodule::StartupStage::Firmware, initialization);
     if (R_FAILED(initialization)) return;
     hosversionSet(MAKEHOSVERSION(version.major, version.minor, version.micro));
-    initialization = fsInitialize(); fs_open = R_SUCCEEDED(initialization); if (!fs_open) return;
-    initialization = fsdevMountSdmc(); mounted = R_SUCCEEDED(initialization);
 }
 extern "C" void __appExit() {
     log_file.Close();
+    if (startup_fs_open) fsFsClose(&startup_fs);
     if (mounted) fsdevUnmountAll();
     if (fs_open) fsExit();
     if (sm_open) smExit();
 }
 int main(int, char **) {
-    if (R_FAILED(initialization) || !Enabled()) return 0; // Never abort boot for this optional module.
-    start_ms = Now(); const auto instance = armGetSystemTick();
+    // Preserve the failing early checkpoint on init failure instead of hiding it.
+    if (R_FAILED(initialization)) return 0;
+    Checkpoint(armodule::StartupStage::Main, 0);
+    const bool enabled = Enabled(); Checkpoint(armodule::StartupStage::Enable, enabled ? 0 : Invalid());
+    if (!enabled) return 0; // Never abort boot for this optional module.
+    start_ms = Now(); const auto instance = startup_record.instance;
     log_healthy = log_file.Open("sdmc:/config/amazon-remote-module/module.log");
+    Checkpoint(armodule::StartupStage::Log, log_healthy ? 0 : Invalid());
     if (!log_healthy) return 0;
-    Log("Amazon Remote Module 0.2.0-alpha.2: neutral controller preflight; explicit arm/link; no reconnect/wake/voice");
+    Log("Amazon Remote Module alpha.2 startup-diag1: Bluetooth commands disabled; neutral Y check only");
     // Current public BTM-layout workaround has device evidence only on 22.5.0.
+    Checkpoint(armodule::StartupStage::FirmwareGuard, hosversionGet() == MAKEHOSVERSION(22,5,0) ? 0 : Invalid());
     if (hosversionGet() != MAKEHOSVERSION(22,5,0)) { Log("Unsupported firmware: no Bluetooth or controller setup"); return 0; }
-    auto rc = pscmInitialize(); ResultLog("pscmInitialize", rc); if (R_FAILED(rc)) return 0;
+    auto rc = pscmInitialize(); Checkpoint(armodule::StartupStage::Psc, rc);
+    ResultLog("pscmInitialize", rc); if (R_FAILED(rc)) return 0;
     PscPmModule pm{}; const u32 dependencies[] = {PscPmModuleId_Fs, PscPmModuleId_Hid, PscPmModuleId_Btm};
     rc = pscmGetPmModule(&pm, static_cast<PscPmModuleId>(0xbe), dependencies, 3, true);
+    Checkpoint(armodule::StartupStage::PscRegister, rc);
     ResultLog("psc register custom id0xbe (device validation pending)", rc);
     if (R_FAILED(rc)) { pscmExit(); return 0; }
     amazon_remote::LibnxSession remote(Log, true, true);
@@ -181,6 +209,10 @@ int main(int, char **) {
         if (armodule::ReadExact(armodule::CommandPath, command) && armodule::ValidCommand(command, instance, status.last_sequence, now)) {
             status.last_sequence = command.sequence;
             if (std::remove(armodule::CommandPath) != 0) { stop(Invalid()); }
+            else if (armodule::StartupDiagnosticOnly &&
+                (command.kind == unsigned(armodule::CommandKind::Arm) || command.kind == unsigned(armodule::CommandKind::Link))) {
+                Log("Diagnostic build: ARM/LINK ignored; no Bluetooth initialization");
+            }
             else if (command.kind == unsigned(armodule::CommandKind::Stop)) stop(0);
             else if (command.kind == unsigned(armodule::CommandKind::CheckController) && policy.CheckController()) {
                 // No remote.Initialize, MC capture, scan, link or target-file access.
@@ -251,7 +283,10 @@ int main(int, char **) {
             status.acknowledged_buttons = controller.LastAcknowledgedButtons();
             status.successful_writes = controller.SuccessfulWrites();
             status.pad_cleanup_result = controller.CleanupError();
-            if (!armodule::Publish("sdmc:/config/amazon-remote-module/status.tmp", armodule::StatusPath, status)) { stop(Invalid()); break; }
+            const bool published = armodule::Publish("sdmc:/config/amazon-remote-module/status.tmp", armodule::StatusPath, status);
+            // Checkpoint once on first status or failure, not every500ms forever.
+            if (!last_status || !published) Checkpoint(armodule::StartupStage::Status, published ? 0 : Invalid());
+            if (!published) { stop(Invalid()); break; }
             last_status = status.now_ms;
         }
         svcSleepThread(policy.Active() ? 20000000 : 100000000);
