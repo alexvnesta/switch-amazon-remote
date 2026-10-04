@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // One-shot native HDLS test. No boot flag, Bluetooth, target access or PSC.
-#include "kernel_heap.hpp"
 #include "hdls_backend.hpp"
 #include "native_hdls.hpp"
 #include "launch_fix_sdk.hpp"
@@ -11,11 +10,11 @@ u32 __nx_applet_type=AppletType_None;
 u32 __nx_fs_num_sessions=1;
 void __libnx_initheap() {
     extern void *fake_heap_start,*fake_heap_end;
-    report.heap_result=armodule::InitializeKernelHeap(fake_heap_start,fake_heap_end);
-    if (report.heap_result) {
-        alignas(16) static char fallback[0x80000];
-        fake_heap_start=fallback; fake_heap_end=fallback+sizeof fallback;
-    }
+    // Existing writable .bss storage, not a kernel heap expansion. aligned_alloc
+    // gives the backend its own isolated page without consuming the stack.
+    alignas(4096) static char arena[0x80000];
+    fake_heap_start=arena; fake_heap_end=arena+sizeof arena;
+    report.heap_result=0; // allocator-arena setup, NOT svcSetHeapSize success
 }
 void __appInit() {
     report.instance=armGetSystemTick();

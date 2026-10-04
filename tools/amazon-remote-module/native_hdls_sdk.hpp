@@ -13,7 +13,7 @@ inline bool NativeEvidenceAbsent() {
 }
 inline bool VerifyNativeBinary(std::array<std::uint8_t,32> &hash) {
     if (!NativeModuleSize) return false;
-    FILE *file=std::fopen("sdmc:/atmosphere/contents/010000000000a4d1/exefs.nsp","rb"); if (!file) return false;
+    FILE *file=std::fopen("sdmc:/atmosphere/contents/010000000000a4d2/exefs.nsp","rb"); if (!file) return false;
     Sha256Context sha{}; sha256ContextCreate(&sha); std::size_t total=0; unsigned char buffer[4096]{};
     while (total<NativeModuleSize) {
         const auto left=NativeModuleSize-total;

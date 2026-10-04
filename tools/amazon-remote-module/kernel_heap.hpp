@@ -4,7 +4,8 @@
 #include <cstddef>
 namespace armodule {
 inline constexpr std::size_t KernelHeapSize=0x200000;
-// Our work-buffer policy requires a real heap, not stack/static fake-heap storage.
+// Historical diag7 helper. Current diagnostics use the writable static arena:
+// requesting additional kernel heap failed the device resource reservation.
 inline Result InitializeKernelHeap(void *&start,void *&end) {
     start=end=nullptr; void *base{};
     const auto rc=svcSetHeapSize(&base,KernelHeapSize);

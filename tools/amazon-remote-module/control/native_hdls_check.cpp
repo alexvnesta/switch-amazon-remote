@@ -14,13 +14,13 @@ int main(int,char **) {
             allowed=false; message=RequestNativeTest(attempt);
         }
         if (!last_draw || now-last_draw>=250) {
-            consoleClear(); std::printf("Amazon Remote Native Pad Check - diag7\n\n");
+            consoleClear(); std::printf("Amazon Remote Native Pad Check 8\n\n");
             std::printf("A: one native launch + NEUTRAL attach/detach. +: exit.\nNo reboot, Bluetooth, pairing, navigation keys or boot changes.\n\n%s\n\n",message);
             std::printf("Intent stage=%u Query=%08x Shell=%08x Launch=%08x PID=%llu\n",attempt.stage,attempt.query_result,attempt.shell_result,attempt.launch_result,
                 static_cast<unsigned long long>(attempt.returned_pid));
             NativeResult result{};
             if (ReadExact(NativeResultPath,result) && ValidNativeResult(result)) {
-                std::printf("Native stage=%u Result=%08x Heap=%08x Firmware=%08x\n",result.stage,result.result,result.heap_result,result.firmware_result);
+                std::printf("Native stage=%u Result=%08x Arena=%08x Firmware=%08x\n",result.stage,result.result,result.heap_result,result.firmware_result);
                 if (result.stage==3) {
                     const auto &t=result.trace;
                     std::printf("Alloc=%u MemType=%u Perm=%u Attr=%u Query=%08x\nOpen=%08x Session=%08x Device=%08x\nSet(first/last)=%08x/%08x Calls=%u\nDetach=%08x Release=%08x Freed=%u Quarantined=%u\n",

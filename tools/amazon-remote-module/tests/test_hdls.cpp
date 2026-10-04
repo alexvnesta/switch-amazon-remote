@@ -93,7 +93,14 @@ int main() {
     { armodule::HdlsBackend b(Allocate,Free); armodule::OwnedController c(b);
       assert(c.Start()==MAKERESULT(Module_Libnx,LibnxError_OutOfMemory) && !query_calls && !free_calls);
       assert(c.Start()==1 && alloc_calls==1); }
-    for (const unsigned type:{3u,4u,11u}) {
+    for (const unsigned type:{MemType_Heap,MemType_CodeMutable}) {
+        Reset(0);memory_type=type;
+        armodule::HdlsBackend b(Allocate,Free); armodule::OwnedController c(b);
+        assert(armodule::NeutralControllerCheck(c)==0 && free_calls==1 && live.empty());
+        const auto t=b.Trace(100,200);
+        assert(armodule::ValidHdlsTrace(t) && t.memory_type==type && t.attach_session_result==0 && t.set_calls==2);
+    }
+    for (const unsigned type:{0u,3u,6u,9u,11u,21u}) {
         Reset(0);memory_type=type;
         armodule::HdlsBackend b(Allocate,Free); armodule::OwnedController c(b);
         assert(c.Start()==KERNELRESULT(InvalidMemoryState) && free_calls==1);
@@ -113,5 +120,5 @@ int main() {
     assert(!armodule::InitializeKernelHeap(start,end) && start==heap_base && static_cast<unsigned char *>(end)-static_cast<unsigned char *>(start)==armodule::KernelHeapSize);
     heap_result=77; assert(armodule::InitializeKernelHeap(start,end)==77 && !start && !end);
     Reset(0);
-    std::puts("PASS HDLS real-heap allocation/query guards, neutral replies, every failure stage, cleanup/quarantine, one-shot latch and kernel heap setup. NOT hardware proof.");
+    std::puts("PASS HDLS owned writable data/heap guards, neutral replies, every failure stage, cleanup/quarantine, one-shot latch and historical kernel heap setup. NOT hardware proof.");
 }

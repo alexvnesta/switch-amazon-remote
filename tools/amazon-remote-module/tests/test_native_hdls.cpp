@@ -43,6 +43,8 @@ int main() {
     NativePermit permit{};permit.issued_ms=5000;permit.checksum=NativeChecksum(permit);
     assert(ValidNativePermit(permit,5000) && ValidNativePermit(permit,7000));
     assert(!ValidNativePermit(permit,4999) && !ValidNativePermit(permit,7001));
+    permit.magic=0x41525037;permit.checksum=NativeChecksum(permit);assert(!ValidNativePermit(permit,5000));
+    permit={};permit.issued_ms=5000;
     permit.neutral_only=0;permit.checksum=NativeChecksum(permit);assert(!ValidNativePermit(permit,5000));
     permit={};permit.issued_ms=5000;permit.program_id++;permit.checksum=NativeChecksum(permit);assert(!ValidNativePermit(permit,5000));
     permit={};permit.issued_ms=5000;permit.buttons_released=0;permit.checksum=NativeChecksum(permit);assert(!ValidNativePermit(permit,5000));
@@ -54,8 +56,8 @@ int main() {
     char directory[]="/tmp/amazon-native-test-XXXXXX";assert(mkdtemp(directory));
     const auto original=std::filesystem::current_path();std::filesystem::current_path(directory);
     std::filesystem::create_directories("sdmc:/config/amazon-remote-module");
-    std::filesystem::create_directories("sdmc:/atmosphere/contents/010000000000a4d1");
-    constexpr char path[]="sdmc:/atmosphere/contents/010000000000a4d1/exefs.nsp";
+    std::filesystem::create_directories("sdmc:/atmosphere/contents/010000000000a4d2");
+    constexpr char path[]="sdmc:/atmosphere/contents/010000000000a4d2/exefs.nsp";
     std::array<std::uint8_t,32> hash{};assert(!VerifyNativeBinary(hash));
     Write(path,NativeModuleSize-1);assert(!VerifyNativeBinary(hash));
     Write(path,NativeModuleSize+1);assert(!VerifyNativeBinary(hash));

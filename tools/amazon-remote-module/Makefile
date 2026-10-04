@@ -66,7 +66,7 @@ build/launch-fix.nacp: Makefile | build/exefs
 	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Launch Fix" "switch-amazon-remote contributors" "0.2.0-a2-diag6" $@
 build/amazon-remote-launch-fix.nro: build/launch-fix.elf build/launch-fix.nacp
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/launch-fix.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
-build/native-hdls.elf: native_hdls.cpp native_hdls.hpp hdls_backend.hpp hdls_trace.hpp controller.hpp kernel_heap.hpp io.hpp Makefile | build/exefs
+build/native-hdls.elf: native_hdls.cpp native_hdls.hpp hdls_backend.hpp hdls_trace.hpp controller.hpp io.hpp Makefile | build/exefs
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) native_hdls.cpp $(LIBS) -o $@
 build/native-hdls-exefs/main: build/native-hdls.elf
 	mkdir -p build/native-hdls-exefs
@@ -79,7 +79,7 @@ build/native-hdls-exefs.nsp: build/native-hdls-exefs/main build/native-hdls-exef
 build/native-pad-check.elf: control/native_hdls_check.cpp native_hdls.hpp native_identity.hpp native_hdls_sdk.hpp launch_fix_sdk.hpp launch_fix.hpp io.hpp Makefile | build/exefs
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) control/native_hdls_check.cpp $(LIBS) -o $@
 build/native-pad-check.nacp: Makefile | build/exefs
-	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Native Pad Check" "switch-amazon-remote contributors" "0.2.0-a2-diag7" $@
+	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Native Pad Check 8" "switch-amazon-remote contributors" "0.2.0-a2-diag8" $@
 build/amazon-remote-native-pad-check.nro: build/native-pad-check.elf build/native-pad-check.nacp
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/native-pad-check.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
 build/exefs:

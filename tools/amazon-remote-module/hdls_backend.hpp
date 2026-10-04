@@ -34,9 +34,11 @@ public:
         if (trace_.memory_query_result) return trace_.memory_query_result;
         trace_.region_address=memory.addr; trace_.region_size=memory.size;
         trace_.memory_type=memory.type; trace_.permission=memory.perm; trace_.attributes=memory.attr;
-        // Require an unshared writable kernel-heap page covering the whole
-        // allocation. Alignment alone never establishes transfer eligibility.
-        if (trace_.buffer_address%0x1000 || (memory.type&0xff)!=MemType_Heap || memory.perm!=Perm_Rw || memory.attr ||
+        // Writable CodeMutable (the static allocator arena) and Heap carry
+        // CanTransfer in the kernel; Stack does not. Accept only these owned
+        // allocator sources, unshared RW, covering the entire isolated page.
+        const auto type=memory.type&0xff;
+        if (trace_.buffer_address%0x1000 || (type!=MemType_Heap && type!=MemType_CodeMutable) || memory.perm!=Perm_Rw || memory.attr ||
             trace_.buffer_address<memory.addr || trace_.buffer_address-memory.addr>memory.size ||
             memory.size-(trace_.buffer_address-memory.addr)<0x1000) return KERNELRESULT(InvalidMemoryState);
         std::memset(buffer_,0,0x1000); transfer_attempted_=true;
