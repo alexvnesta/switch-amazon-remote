@@ -77,6 +77,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --prerelease --latest=false \
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --draft --prerelease --latest=false \
             --title "$GITHUB_REF_NAME — experimental developer preview" \
             --notes-file "docs/releases/$GITHUB_REF_NAME.md"
+          download_dir="$(mktemp -d)"
+          gh release download "$GITHUB_REF_NAME" --dir "$download_dir"
+          python3 scripts/verify_release.py "$download_dir" --commit "$(git rev-parse HEAD)"
+          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false --verify-tag

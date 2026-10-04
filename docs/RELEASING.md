@@ -16,8 +16,10 @@ the release version covers the whole collection, including the 0.2.0 candidate.
 4. Tag CI repeats Linux/macOS sanitizer and package tests, builds in the official
    devkitPro image pinned by digest, compiles the pinned public libnx source, and
    verifies all assets. Only the final publishing job has release-write access.
-5. Successful tag CI publishes a GitHub **prerelease**, explicitly not Latest.
-   Download its assets afresh and run the verifier. Do not overwrite release
+5. Tag CI uploads a private draft, downloads and verifies its assets, then
+   publishes a GitHub **prerelease**, explicitly not Latest. A failed upload or
+   verification leaves an unpublished draft for inspection. Download the public
+   assets afresh and run the verifier. Do not overwrite release
    assets: fix problems in a new alpha tag with a new release note.
 
 Action versions are pinned by commit; toolchain image and libnx source are pinned
