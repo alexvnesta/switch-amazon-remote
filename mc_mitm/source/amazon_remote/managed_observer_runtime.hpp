@@ -20,4 +20,6 @@ bool ReadTargetSighting(void *out, std::size_t size);
 bool ArmTargetCapture();
 void EndTargetCapture();
 bool ReadCaptureStatus(void *out, std::size_t size);
+// Retained, target-only connection callbacks, including errors. Evidence only.
+bool ReadConnectionEvidence(void *out, std::size_t size);
 }

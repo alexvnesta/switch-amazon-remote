@@ -5,7 +5,21 @@
 
 namespace armodule {
 inline constexpr std::uint32_t Magic = 0x41524d31;
-#ifdef ARMODULE_NAV13
+#ifdef ARMODULE_NAV14
+inline constexpr std::uint32_t Version = 3;
+inline constexpr char Directory[] = "sdmc:/config/amazon-remote-nav14";
+inline constexpr char CommandPath[] = "sdmc:/config/amazon-remote-nav14/command.bin";
+inline constexpr char StatusPath[] = "sdmc:/config/amazon-remote-nav14/status.bin";
+inline constexpr char CommandTemp[] = "sdmc:/config/amazon-remote-nav14/command.tmp";
+inline constexpr char StatusTemp[] = "sdmc:/config/amazon-remote-nav14/status.tmp";
+inline constexpr char EnablePath[] = "sdmc:/config/amazon-remote-nav14/enable.txt";
+inline constexpr char LogPath[] = "sdmc:/config/amazon-remote-nav14/module.log";
+inline constexpr char HdlsPath[] = "sdmc:/config/amazon-remote-nav14/hdls-backend.bin";
+inline constexpr char HdlsTemp[] = "sdmc:/config/amazon-remote-nav14/hdls-backend.tmp";
+inline constexpr char ControlPath[] = "sdmc:/config/amazon-remote-nav14/control.bin";
+inline constexpr char ControlTemp[] = "sdmc:/config/amazon-remote-nav14/control.tmp";
+inline constexpr char StatusFsPath[]="/config/amazon-remote-nav14/status.bin";
+#elif defined(ARMODULE_NAV13)
 inline constexpr std::uint32_t Version = 3;
 inline constexpr char Directory[] = "sdmc:/config/amazon-remote-nav13";
 inline constexpr char CommandPath[] = "sdmc:/config/amazon-remote-nav13/command.bin";

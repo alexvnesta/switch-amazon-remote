@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Inactive, bounded experimental sysmodule. Not a production auto-pair daemon.
 #include <switch.h>
+#ifdef ARMODULE_NAV14
+#include "connection_capture.hpp"
+#endif
 #include "../../mc_mitm/source/amazon_remote/libnx_session.hpp"
 #include "../../mc_mitm/source/amazon_remote/diagnostic_log.hpp"
 #include "../../mc_mitm/source/amazon_remote/capture_lease.hpp"
@@ -181,12 +184,38 @@ int main(int, char **) {
     armodule::InputHoldGuard hold_guard;
     Service mc{}; bool capture_owned = false, awake = true, shutdown = false;
     BtdrvAddress target{}; amazon_remote::CaptureLeaseWire lease{};
+#ifdef ARMODULE_NAV14
+    armodule::ConnectionCapture connection_capture;
+    std::uint64_t connection_capture_ms{};
+    bool connection_capture_checked{};
+    const auto capture_connections = [&](bool force) {
+        if (!capture_owned || !serviceIsActive(&mc) || !connection_capture_checked) return;
+        const auto now=Now();
+        if (!force && connection_capture_ms && now-connection_capture_ms<500) return;
+        connection_capture_ms=now;
+        amazon_remote::ConnectionEvidenceWire wire{};
+        const auto result=serviceDispatch(&mc,65004,
+            .buffer_attrs={SfBufferAttr_HipcPointer | SfBufferAttr_Out},.buffers={{&wire,sizeof wire}});
+        if (R_FAILED(result) || !connection_capture.Accept(wire,Now(),Log)) {
+            ResultLog("connection evidence access gap (not a connection result)",R_FAILED(result)?result:Invalid());
+            connection_capture_checked=false; // No error retry/spam; connection behavior unchanged.
+        } else if (force) {
+            char line[192]{};
+            std::snprintf(line,sizeof line,"TARGET_CONNECTION_EVIDENCE_FINAL captured=%lu overflow=%lu; explicit60slease_only=1 missing_callback_not_radio_absence_proof=1",
+                static_cast<unsigned long>(connection_capture.Count()),static_cast<unsigned long>(connection_capture.Overflow()));
+            Log(line);
+        }
+    };
+#endif
     armodule::Status status{}; status.instance = instance;
     std::uint64_t last_clock = start_ms;
 #ifndef ARMODULE_NAV12
     std::uint64_t last_status = 0;
 #endif
     const auto cleanup = [&] {
+#ifdef ARMODULE_NAV14
+        capture_connections(true); // Final snapshot before ending our lease/closing MC.
+#endif
         const auto pad_result = controller.Stop();
         const auto final_trace=backend.Trace(instance,Now());
         if (final_trace.open_result!=armodule::HdlsNotAttempted)
@@ -271,6 +300,16 @@ int main(int, char **) {
                 if (!policy.Arm() || !log_healthy || Pending() || !Target(target)) rc = Invalid();
                 else rc = Preflight();
                 if (R_SUCCEEDED(rc)) rc = smGetService(&mc, "mc");
+#ifdef ARMODULE_NAV14
+                if (R_SUCCEEDED(rc)) {
+                    amazon_remote::ConnectionEvidenceWire wire{};
+                    rc=serviceDispatch(&mc,65004,
+                        .buffer_attrs={SfBufferAttr_HipcPointer | SfBufferAttr_Out},.buffers={{&wire,sizeof wire}});
+                    if (R_SUCCEEDED(rc) && (!connection_capture.Accept(wire,Now(),Log) || wire.target_count || wire.overflow)) rc=Invalid();
+                    connection_capture_checked=R_SUCCEEDED(rc);
+                    ResultLog("observer connection evidence preflight; failure prevents Bluetooth initialization",rc);
+                }
+#endif
                 if (R_SUCCEEDED(rc)) rc = ReadLease(mc, lease);
                 if (R_SUCCEEDED(rc) && lease.state != unsigned(amazon_remote::CaptureLeaseState::Available)) rc = Invalid();
                 if (R_SUCCEEDED(rc)) { rc = serviceDispatch(&mc, 65001); capture_owned = R_SUCCEEDED(rc); }
@@ -291,6 +330,9 @@ int main(int, char **) {
         }
         if (policy.Active()) {
             rc = remote.Poll(Now());
+#ifdef ARMODULE_NAV14
+            capture_connections(false);
+#endif
             if (R_FAILED(rc) || !log_healthy) stop(R_FAILED(rc) ? rc : Invalid());
             else if (remote.Ready()) {
                 if (policy.Get() == armodule::State::Linking && policy.Ready()) {

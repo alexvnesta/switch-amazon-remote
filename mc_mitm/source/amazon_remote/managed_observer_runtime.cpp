@@ -8,6 +8,7 @@
 #include "managed_observer_runtime.hpp"
 #include "target_sighting.hpp"
 #include "capture_lease.hpp"
+#include "connection_evidence.hpp"
 #include "intent_trace_runtime.hpp"
 #include "../bluetooth_mitm/bluetooth/bluetooth_ble.hpp"
 
@@ -44,6 +45,7 @@ constexpr unsigned TraceDrainBudget = 4;
 ::amazon_remote::ManagedObserver g_observer;
 ::amazon_remote::TargetSightingSnapshot g_sighting;
 ::amazon_remote::OneShotCaptureLease g_capture;
+::amazon_remote::ConnectionEvidenceSnapshot g_connections;
 // Only Startup/Main accesses the following state; BLE accesses g_observer only.
 bool g_configured{}, g_started{}, g_session_active{}, g_output_failed{};
 bool g_diagnostic_device_zero{};
@@ -206,6 +208,7 @@ void Initialize() {
     if (!g_configured) return;
     g_target = target;
     if (!g_sighting.Configure(target)) { g_configured = false; return; }
+    if (!g_connections.Configure(target)) { g_configured = false; return; }
     // Snapshot's sole controlling thread is Startup/Main. IPC only controls
     // the atomic lease; it must never mutate snapshot generations.
     g_sighting.SetEnabled(g_diagnostic_device_zero);
@@ -235,7 +238,7 @@ void Start() {
         }
     }
     g_session_active = true;
-    AddLine("observer=passive-public-mc-v5 begin=1 window_ms=%lld clock_anchored_before_modules=1 sdk_layout_checked=1 callback_abi_not_device_verified=1 scan_changed=0 gatt_owned=0 identity_verified=0 intent_early_capture=%u diagnostic_device_zero_opt_in=%u; startup_logging_separate_from_one_shot_capture_lease=1 capture_requires_explicit_arm=1", static_cast<long long>(WindowMilliseconds), ble_intent_trace::Enabled(), g_diagnostic_device_zero);
+    AddLine("observer=passive-public-mc-v6 begin=1 window_ms=%lld clock_anchored_before_modules=1 sdk_layout_checked=1 callback_abi_not_device_verified=1 scan_changed=0 gatt_owned=0 identity_verified=0 intent_early_capture=%u diagnostic_device_zero_opt_in=%u; startup_logging_separate_from_one_shot_capture_lease=1 capture_requires_explicit_arm=1 target_connection_evidence_capacity=8 error_callbacks_retained=1", static_cast<long long>(WindowMilliseconds), ble_intent_trace::Enabled(), g_diagnostic_device_zero);
     if (!FlushBatch()) return;
     if (UptimeMilliseconds() >= WindowMilliseconds) {
         DisableLog();
@@ -280,8 +283,10 @@ void Observe(std::uint32_t type, const void *event, std::size_t size) {
     // Exact-target, bounded passive capture only while the explicit lease is
     // active. Independent of startup tracing/logging; no Bluetooth calls.
     const auto now = armTicksToNs(armGetSystemTick()) / 1000000;
-    if (g_diagnostic_device_zero && g_capture.Active(now))
+    if (g_diagnostic_device_zero && g_capture.Active(now)) {
         g_sighting.Observe(type, static_cast<const std::uint8_t *>(event), size, now);
+        g_connections.Observe(type, static_cast<const std::uint8_t *>(event), size, now);
+    }
     if (ble_intent_trace::Enabled() && type == ::amazon_remote::ManagedObserver::ScanEventType) {
         const bool hint = ::amazon_remote::MatchesConfiguredAddressAtSdkOffset(event, size, g_target);
         ble_intent_trace::ObserveManagedHeader(type, event, size, hint);
@@ -315,6 +320,13 @@ bool ReadCaptureStatus(void *out, std::size_t size) {
         wire.deadline_boot_ms = 0;
     }
     std::memcpy(out, &wire, sizeof wire);
+    return true;
+}
+bool ReadConnectionEvidence(void *out, std::size_t size) {
+    if (!g_configured || !g_diagnostic_device_zero || !out || size!=sizeof(::amazon_remote::ConnectionEvidenceWire)) return false;
+    ::amazon_remote::ConnectionEvidenceWire wire{};
+    if (!g_connections.Read(wire)) return false;
+    std::memcpy(out,&wire,sizeof wire);
     return true;
 }
 bool ArmTargetCapture() {

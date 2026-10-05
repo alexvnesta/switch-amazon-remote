@@ -9,7 +9,7 @@ make host-test
 python3 scripts/check_public_tree.py
 ```
 
-The first command runs12 ASAN/UBSAN targets, including29 scenarios against the
+The first command runs13 ASAN/UBSAN transport/observer targets, including29 scenarios against the
 actual libnx transport through a fake SDK, plus the module's65,536 mapping masks
 and resource/lifecycle/protocol tests. A separate module test compiles the actual
 HDLS adapter against a minimal fake SDK; that is not an ABI or permission proof.

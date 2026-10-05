@@ -127,7 +127,9 @@ int main(int, char **) {
         if (!last_draw || Now()-last_draw >= 250 || requested) {
             consoleClear();
 #if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
-#ifdef ARMODULE_NAV13
+#ifdef ARMODULE_NAV14
+            std::printf("Amazon Remote Navigation 14 - connection evidence\n\n");
+#elif defined(ARMODULE_NAV13)
             std::printf("Amazon Remote Navigation 13 - owned controller lifetime\n\n");
             std::printf("After a pad recovery, release remote buttons before pressing again.\n");
 #elif defined(ARMODULE_NAV12)
