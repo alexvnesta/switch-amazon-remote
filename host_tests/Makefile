@@ -2,8 +2,10 @@ CXX ?= clang++
 CXXFLAGS = -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer
 ROOT := ..
 SOURCES := test_hogp_client.cpp $(ROOT)/mc_mitm/source/amazon_remote/hogp_client.cpp $(ROOT)/mc_mitm/source/amazon_remote/remote_decoder.cpp
-all: test_hogp_client test_input_diagnostic test_libnx_input_adapter test_diagnostic_log test_ble_preflight test_advertisement_policy test_managed_observer test_intent_trace test_ble_header_trace test_scan_cache_census test_target_sighting test_capture_lease test_connection_evidence test_session_budget test_bond_check test_pairing_audit
-test_pairing_audit: test_pairing_audit.cpp $(ROOT)/tools/amazon-remote-pairing-audit/audit.hpp $(ROOT)/tools/amazon-remote-pairing-audit/backend.hpp pairing_audit_sdk/switch.h
+all: test_hogp_client test_input_diagnostic test_libnx_input_adapter test_diagnostic_log test_ble_preflight test_advertisement_policy test_managed_observer test_intent_trace test_ble_header_trace test_scan_cache_census test_target_sighting test_capture_lease test_connection_evidence test_session_budget test_bond_check test_pairing_audit test_enrollment_context
+test_enrollment_context: test_enrollment_context.cpp $(ROOT)/tools/amazon-remote-pairing-audit/audit.hpp $(ROOT)/tools/amazon-remote-pairing-audit/context.hpp $(ROOT)/tools/amazon-remote-pairing-audit/backend.hpp pairing_audit_sdk/switch.h
+	$(CXX) $(CXXFLAGS) -Ipairing_audit_sdk $< -o $@
+test_pairing_audit: test_pairing_audit.cpp $(ROOT)/tools/amazon-remote-pairing-audit/audit.hpp $(ROOT)/tools/amazon-remote-pairing-audit/context.hpp $(ROOT)/tools/amazon-remote-pairing-audit/backend.hpp pairing_audit_sdk/switch.h
 	$(CXX) $(CXXFLAGS) -Ipairing_audit_sdk $< -o $@
 test_bond_check: test_bond_check.cpp $(ROOT)/tools/amazon-remote-bond-check/check.hpp
 	$(CXX) $(CXXFLAGS) $< -o $@
@@ -56,4 +58,5 @@ test: all
 	./test_session_budget
 	./test_bond_check
 	./test_pairing_audit
+	./test_enrollment_context
 .PHONY: all test tsan-capture-lease

@@ -2,9 +2,33 @@
 #pragma once
 #include <switch.h>
 #include "audit.hpp"
+#include "context.hpp"
 #include <cstring>
 namespace araudit {
 struct Backend {
+    std::uint64_t Now(){return armTicksToNs(armGetSystemTick())/1000000;}
+    Result Connections(bool system,std::array<Connection,16> &out,std::uint32_t &count) {
+        std::array<BtdrvBleConnectionInfo,16> list{};u8 total{};
+        const auto rc=system?btmBleGetConnectionState(list.data(),list.size(),&total):
+            btmuBleGetConnectionState(list.data(),list.size(),&total);
+        if(rc)return rc;
+        count=total;
+        if(total<list.size())for(unsigned i=0;i<total;++i) {
+            std::memcpy(out[i].address.data(),list[i].addr.address,out[i].address.size());
+            out[i].handle=list[i].connection_handle;
+        }
+        return 0;
+    }
+    Result SystemPaired(Parameter p,std::array<Address,10> &out,std::uint32_t &count) {
+        BtdrvBleAdvertisePacketParameter parameter{};parameter.company_id=p.company;
+        std::memcpy(parameter.pattern_data,p.pattern.data(),p.pattern.size());
+        std::array<BtdrvAddress,10> addresses{};u8 total{};
+        const auto rc=btmBleGetPairedAddresses(parameter,addresses.data(),addresses.size(),&total);
+        if(rc)return rc;
+        count=total;
+        if(total<=addresses.size())for(unsigned i=0;i<total;++i)std::memcpy(out[i].data(),addresses[i].address,out[i].size());
+        return 0;
+    }
     Result OpenBle(){return btmuInitialize();}
     Result Paired(Parameter p,std::array<Address,10> &out,std::uint32_t &count) {
         BtdrvBleAdvertisePacketParameter parameter{};parameter.company_id=p.company;
