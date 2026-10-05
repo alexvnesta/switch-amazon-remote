@@ -5,7 +5,7 @@
 The proven session connects the configured target, validates VID0171/PID0427
 and the exact149-byte report map, requests a NoMitm GATT read, subscribes to the
 two verified standard input reports, and publishes through its owned HDLS pad.
-It never calls `btmuBlePairDevice` or `btmBlePairDevice`. Successful GATT reads
+The proven Navigation14 never calls `btmuBlePairDevice` or `btmBlePairDevice`. Successful GATT reads
 and generic pairing events are not proof of a persisted bond.
 
 The initial getter-only check queries system parameter IDs1/FFFF. Public
@@ -48,9 +48,9 @@ then open FTPD. No remote flashing, re-pairing or reboot is needed.
 
 1. Inspect the actual Amazon-profile query and native HID baseline. A matched
    entry is useful evidence of inclusion, not permission to skip persistence
-   checks. If there is no match, establish the explicit-pairing API's parameter
-   semantics before deploying a mutation; do not guess another scope or reset
-   other controller records.
+   checks. A negative result does not establish a missing bond. The user-authorized
+   Navigation15 trial explicitly labels the AD-derived parameter as experimental;
+   do not guess additional scopes or reset other controller records.
 2. Explicit BLE enrollment, if needed, belongs to the existing target-validated
    session after fingerprint/security-read checks and fresh connection/address
    revalidation. It needs a deliberate user enrollment action, one request with
@@ -70,6 +70,17 @@ serve as an enrollment-window signal, but it must be combined with explicit
 opt-in and target checks. An active flag is not a reason to pair ambient devices.
 No new menu detector, application-ID heuristic or custom controller protocol is
 needed to test this public getter.
+
+## Separate Navigation15 candidate
+
+The getter-only audit remains unchanged. [Navigation15](NAVIGATION15.md) now adds
+one explicit operator-Y request through the existing verified session, not through
+the audit app or automatically through the native pairing-window getter. It uses
+the public `btmuBlePairDevice` wrapper with the fresh configured-target handle and
+the same experimental AD-derived profile. Its exclusive synced intent blocks
+repeat requests across restart; post-query results distinguish request acceptance
+from same-scope inclusion. Device enrollment and post-reboot persistence remain
+unverified until those actual tests. Native HID registration is still separate.
 
 References: [public libnx BLE user API](https://github.com/switchbrew/libnx/blob/feebd026ca0f5dcc2119f46ad8e0d16ad3dd4973/nx/include/switch/services/btmu.h),
 [native pairing getter](https://github.com/switchbrew/libnx/blob/feebd026ca0f5dcc2119f46ad8e0d16ad3dd4973/nx/include/switch/services/btmsys.h),

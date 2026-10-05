@@ -8,6 +8,7 @@
 #include "native_gatt_requests.hpp"
 #include "session_budget.hpp"
 #include "health_log_gate.hpp"
+#include "enrollment.hpp"
 
 namespace amazon_remote {
 using Logger = void (*)(const char *message);
@@ -38,7 +39,15 @@ public:
     Error GetError() const { return client_.GetError(); }
     bool FingerprintObserved() const { return fingerprint_logged_; }
     bool SecurityReadObserved() const { return security_read_logged_; }
+    // Explicit operator call only, never invoked by connection/Ready/polling.
+    Result EnrollOnce(std::uint64_t instance,EnrollmentIntent persist_intent);
+    const EnrollmentRecord &Enrollment() const {return enrollment_;}
 private:
+    Result ReadEnrollmentList(std::uint32_t &count,std::uint32_t &matches);
+    void PollEnrollment(std::uint64_t now);
+    void EnrollmentFinish(EnrollmentState state,Result result);
+    EnrollmentRecord enrollment_{};
+    bool enrollment_consumed_{};
     Result LoadCache(std::uint32_t connection);
     Result LoadFingerprintCache(std::uint32_t connection);
     Result ReadInputInventory(const char *label, bool adopt);

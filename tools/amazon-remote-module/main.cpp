@@ -13,6 +13,9 @@
 #include "protocol.hpp"
 #include "config.hpp"
 #include "startup_storage.hpp"
+#ifdef ARMODULE_NAV15
+#include "enrollment_storage.hpp"
+#endif
 #if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
 #include "status_storage.hpp"
 #endif
@@ -66,6 +69,12 @@ void ResultLog(const char *operation, Result rc) {
     char line[192]{};
     std::snprintf(line, sizeof line, "%s Result=%08lx", operation, static_cast<unsigned long>(rc)); Log(line);
 }
+#ifdef ARMODULE_NAV15
+bool EnrollmentIntent(const amazon_remote::EnrollmentRecord &record) {
+    return log_healthy && record.instance==startup_record.instance &&
+        armodule::PersistEnrollmentIntent(armodule::EnrollmentIntentPath,record);
+}
+#endif
 bool Enabled() {
     constexpr char expected[] = "enable-experimental-module=1\n";
     char data[sizeof expected-1]{};
@@ -183,7 +192,7 @@ int main(int, char **) {
 #ifdef ARMODULE_NAV13
 #ifdef ARMODULE_NAV15
     backend.SetLogger(Log,true);
-    Log("NAV15 sustained test: setup90s preserved; Ready30min maximum; identical health logs sampled30s, service polls unchanged; no automatic reconnect");
+    Log("NAV15: setup90s, Ready30min; explicit Y enrollment once after verified neutral READY; AD-derived profile is experimental; no automatic pair/reconnect");
 #else
     backend.SetLogger(Log);
 #endif
@@ -217,6 +226,21 @@ int main(int, char **) {
     };
 #endif
     armodule::Status status{}; status.instance = instance;
+#ifdef ARMODULE_NAV15
+    amazon_remote::EnrollmentRecord last_enrollment{};
+    bool enrollment_saved{}, enrollment_write_failed{};
+    const auto publish_enrollment = [&] {
+        const auto &record=remote.Enrollment();
+        if(record.state==unsigned(amazon_remote::EnrollmentState::None))return true;
+        if(enrollment_write_failed)return false;
+        if(enrollment_saved && !std::memcmp(&record,&last_enrollment,sizeof record))return true;
+        if(!amazon_remote::ValidEnrollment(record) ||
+           !armodule::Publish(armodule::EnrollmentTemp,armodule::EnrollmentPath,record)) {
+            enrollment_write_failed=true;Log("ENROLLMENT_RECORD_FAILED: stop; intent preserved; no retry");return false;
+        }
+        last_enrollment=record;enrollment_saved=true;return true;
+    };
+#endif
     std::uint64_t last_clock = start_ms;
 #ifndef ARMODULE_NAV12
     std::uint64_t last_status = 0;
@@ -233,6 +257,9 @@ int main(int, char **) {
         if (!status.result && pad_result) status.result = pad_result;
         ResultLog("neutralize/detach owned pad", pad_result);
         remote.Close();
+#ifdef ARMODULE_NAV15
+        if(!publish_enrollment() && !status.result)status.result=Invalid();
+#endif
         if (capture_owned && serviceIsActive(&mc)) ResultLog("end own capture", serviceDispatch(&mc, 65003));
         capture_owned = false; serviceClose(&mc); lease = {};
         status.link_ready = status.buttons = status.output_attached = 0;
@@ -290,6 +317,17 @@ int main(int, char **) {
                 Log("Diagnostic build: ARM/LINK ignored; no Bluetooth initialization");
             }
             else if (command.kind == unsigned(armodule::CommandKind::Stop)) stop(0);
+#ifdef ARMODULE_NAV15
+            else if(command.kind==unsigned(armodule::CommandKind::Enroll)) {
+                // Live session repeats every identity/handle/fingerprint guard;
+                // a stale UI record can never authorize pairing by itself.
+                if(policy.Get()==armodule::State::Ready && controller.Attached() &&
+                   !remote.Buttons() && log_healthy) {
+                    const auto enrollment_rc=remote.EnrollOnce(instance,EnrollmentIntent);
+                    ResultLog("operator explicit BLE enrollment; Result0 is request acceptance only",enrollment_rc);
+                } else Log("ENROLLMENT_REFUSED: live READY/owned pad/neutral input required; no request queued");
+            }
+#endif
             else if (command.kind == unsigned(armodule::CommandKind::CheckController) && policy.CheckController()) {
                 // No remote.Initialize, MC capture, scan, link or target-file access.
                 rc = log_healthy ? armodule::NeutralControllerCheck(controller) : Invalid();
@@ -385,6 +423,9 @@ int main(int, char **) {
                 rc = ReadLease(mc, lease); if (R_FAILED(rc) || !LiveLease(lease, Now())) stop(R_FAILED(rc) ? rc : Invalid());
             }
         }
+#ifdef ARMODULE_NAV15
+        if(!publish_enrollment()){stop(Invalid());break;}
+#endif
 #ifdef ARMODULE_NAV12
         if (status_schedule.Due(Now())) {
 #else

@@ -30,6 +30,7 @@ struct FakeState {
     unsigned native_calls{};
     Result system_open_result{},system_mtu_result{};
     unsigned system_opens{},system_closes{},system_mtu_calls{},system_getters{};
+    unsigned pair_variant{},pair_calls{},paired_getters{},intent_calls{};bool listed{};
     std::deque<BtdrvBleEventInfo> events; std::vector<std::string> logs;
 } f;
 BtdrvGattAttributeUuid U(u16 value) { BtdrvGattAttributeUuid u{}; u.size=2; u.uuid[0]=value&255; u.uuid[1]=value>>8; return u; }
@@ -135,6 +136,53 @@ void SustainedFlow(unsigned variant) {
     f.now=ready+1800000;assert(remote.Poll(f.now));
     assert(Logged("INPUT_STOP_BUDGET"));
     remote.Close();assert(f.deregisters==2 && !f.disconnects && !remote.Buttons());
+}
+bool EnrollmentIntentPersist(const EnrollmentRecord &r) {
+    ++f.intent_calls;
+    assert(r.state==unsigned(EnrollmentState::Prepared) && !r.request_issued && r.instance==42 &&
+           r.connection==4 && r.requested_ms && !r.before_result && !r.before_matches &&
+           r.checksum==EnrollmentChecksum(r) && !f.pair_calls);
+    if(f.pair_variant==10)f.address.address[0]^=1;
+    if(f.pair_variant==11)f.now+=2100;
+    return f.pair_variant!=9;
+}
+void EnrollmentFlow(unsigned variant) {
+    Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;f.pair_variant=variant;
+    LibnxSession remote(Log,true,true,true,true,variant!=1);Start(remote);
+    if(variant!=2)assert(!Advance(remote) && remote.Ready());
+    assert(!f.pair_calls && !f.paired_getters && !f.intent_calls); // READY itself never pairs.
+    if(variant==3){const u8 keyboard[]{0x52,0,0};Queue(4,0x1812,0x2a4d,0,keyboard,sizeof keyboard);f.now+=20;assert(!remote.Poll(f.now));}
+    if(variant==4)f.address.address[0]^=1;
+    if(variant==5)f.listed=true;
+    if(variant==19)f.now+=1800000;
+    const auto rc=remote.EnrollOnce(variant==21?0:42,variant==22?nullptr:EnrollmentIntentPersist);
+    const bool issued=variant==0 || (variant>=12 && variant<=18);
+    assert(f.pair_calls==unsigned(issued));
+    if(!issued && variant!=5)assert(rc && remote.Enrollment().state==unsigned(EnrollmentState::Refused));
+    else if(variant==5)assert(!rc && remote.Enrollment().state==unsigned(EnrollmentState::AlreadyListed) && !f.intent_calls);
+    else if(variant==12)assert(rc==0x5528f && remote.Enrollment().state==unsigned(EnrollmentState::Failed));
+    else {
+        assert(!rc && remote.Enrollment().state==unsigned(EnrollmentState::Accepted));
+        if(variant==13)f.now=remote.Enrollment().deadline_ms;
+        else if(variant==15)f.address.address[0]^=1;
+        else if(variant==16)remote.Close();
+        else if(variant==18)f.now=remote.Enrollment().requested_ms-1;
+        else f.now+=20;
+        if(variant==18) {
+            // The existing session clock guard rejects this before enrollment
+            // polling. Cleanup cancels the pending request, without querying.
+            const auto getters=f.paired_getters;
+            assert(remote.Poll(f.now));remote.Close();
+            assert(f.paired_getters==getters);
+        } else if(variant!=16)(void)remote.Poll(f.now);
+        if(variant==13)assert(remote.Enrollment().state==unsigned(EnrollmentState::TimedOut));
+        else if(variant==14 || variant==15)assert(remote.Enrollment().state==unsigned(EnrollmentState::Failed));
+        else if(variant==16 || variant==18)assert(remote.Enrollment().state==unsigned(EnrollmentState::Cancelled));
+        else assert(remote.Enrollment().state==unsigned(EnrollmentState::Listed));
+    }
+    const auto count=f.pair_calls;assert(remote.EnrollOnce(42,EnrollmentIntentPersist) && f.pair_calls==count);
+    assert(remote.Enrollment().checksum==EnrollmentChecksum(remote.Enrollment()));
+    remote.Close();assert(!f.disconnects); // No unpair, bond clearing, fake HID lifecycle or ownership override.
 }
 void SystemFlow(unsigned variant) {
     Sandbox sandbox;f=FakeState{};f.system=true;
@@ -326,6 +374,22 @@ Result btmuBleGetConnectionState(BtdrvBleConnectionInfo *info,u8 count,u8 *total
 Result btmuGetBleScanResultsForGeneral(BtdrvBleScanResult*,u8,u8 *total) { *total=0; return 0; }
 Result btmuGetBleScanResultsForSmartDevice(BtdrvBleScanResult*,u8,u8 *total) { *total=0; return 0; }
 Result btmuBleConnect(BtdrvAddress target) { assert(!std::memcmp(&target,&f.target,sizeof target)); ++f.connects; f.connected=f.discovery=true; return 0; }
+Result btmuBleGetPairedDevices(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *out,u8 count,u8 *total) {
+    assert(count==10 && p.company_id==0x171);
+    const u8 pattern[]{4,0x27,2,0x7d,0,0};assert(!std::memcmp(p.pattern_data,pattern,6));++f.paired_getters;
+    if(f.pair_variant==8 || (f.pair_variant==14 && f.pair_calls))return 0x5528f;
+    *total=f.pair_variant==6?10:f.pair_variant==7?2:f.pair_variant==20?11:f.listed?1:0;
+    if(f.listed || f.pair_variant==7)out[0]=f.target;
+    if(f.pair_variant==7)out[1]=f.target;
+    return 0;
+}
+Result btmuBlePairDevice(u32 connection,BtdrvBleAdvertisePacketParameter p) {
+    assert(connection==4 && !std::memcmp(&f.address,&f.target,sizeof f.target) &&
+           p.company_id==0x171 && f.security_requested && f.intent_calls==1 && !f.pair_calls);
+    ++f.pair_calls;
+    if(f.pair_variant==12)return 0x5528f;
+    f.listed=f.pair_variant!=13;return 0;
+}
 Result btdevConnectToGattServer(BtdrvAddress target) { return btmuBleConnect(target); }
 Result btdevDisconnectFromGattServer(u32) { ++f.disconnects; return Invalid(); }
 Result btdevConfigureBleMtu(u32 connection,u16 mtu) { assert(!f.system && connection==4 && mtu==512); return 0; }
@@ -465,6 +529,8 @@ Result FakeServiceDispatchInput(Service *s,u32 cmd,const void *input,std::size_t
 int main() {
     GoodFlow(); FingerprintUnchanged();
     for(unsigned variant=0;variant<3;++variant)SustainedFlow(variant);
+    for(unsigned variant=0;variant<23;++variant)EnrollmentFlow(variant);
+    std::cout<<"PASS enrollment transport:23 scenarios, no automatic requests, no duplicate request, exact target/neutral/fingerprint guards and bounded list observation. NOT hardware proof.\n";
     for (unsigned variant=0;variant<6;++variant) SystemFlow(variant);
     for(unsigned command:{90u,91u,93u,94u})NativeRequestFailure(command);
     NativeWhitelist();

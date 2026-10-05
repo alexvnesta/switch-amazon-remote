@@ -240,5 +240,9 @@ host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp test
 	./build/test_navigation14
 	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -DARMODULE_NAV15 -DARMODULE_NAV14 -DARMODULE_NAV13 -DARMODULE_NAV12 -Itests/fake_sdk tests/test_navigation.cpp -o build/test_navigation15
 	./build/test_navigation15
+	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -DARMODULE_NAV15 tests/test_enrollment.cpp -o build/test_enrollment15
+	./build/test_enrollment15
+	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -DARMODULE_NAV14 tests/test_enrollment.cpp -o build/test_enrollment14
+	./build/test_enrollment14
 HOST_CXX ?= c++
 .PHONY: all host-test

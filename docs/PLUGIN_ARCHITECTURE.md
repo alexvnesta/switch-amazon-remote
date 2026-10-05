@@ -25,11 +25,14 @@ The [BLE enrollment audit](BLE_ENROLLMENT.md) separates saved BLE-list evidence,
 current native HID visibility and native-pairing-window state. It uses existing
 getters rather than inventing a page detector or treating a GATT read as bonding.
 
-Navigation14 verified one manually enrolled K7Q3M7 session and actual HOME input.
+Navigation14 verified one manually connected K7Q3M7 session and actual HOME input.
 Current code already runs input as a native background process; the companion
 does not deliver input. It still has temporary candidate IDs, a diagnostic
 pending marker and one-shot manual lifecycle. This is not yet a boot-ready
 compatibility release or proof of durable bonding.
+Navigation15 adds an explicit Y enrollment trial through the public BLE API,
+not automatic native-menu enrollment. Request acceptance, same-scope listing,
+post-reboot persistence and native HID registration remain separate evidence.
 
 ## Components
 

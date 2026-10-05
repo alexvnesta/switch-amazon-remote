@@ -19,6 +19,9 @@ inline constexpr char HdlsTemp[] = "sdmc:/config/amazon-remote-nav15/hdls-backen
 inline constexpr char ControlPath[] = "sdmc:/config/amazon-remote-nav15/control.bin";
 inline constexpr char ControlTemp[] = "sdmc:/config/amazon-remote-nav15/control.tmp";
 inline constexpr char StatusFsPath[]="/config/amazon-remote-nav15/status.bin";
+inline constexpr char EnrollmentIntentPath[]="sdmc:/config/amazon-remote-nav15/enrollment-intent.bin";
+inline constexpr char EnrollmentPath[]="sdmc:/config/amazon-remote-nav15/enrollment.bin";
+inline constexpr char EnrollmentTemp[]="sdmc:/config/amazon-remote-nav15/enrollment.tmp";
 #elif defined(ARMODULE_NAV14)
 inline constexpr std::uint32_t Version = 3;
 inline constexpr char Directory[] = "sdmc:/config/amazon-remote-nav14";
@@ -117,7 +120,11 @@ inline constexpr char ControlPath[] = "sdmc:/config/amazon-remote-module/control
 inline constexpr char ControlTemp[] = "sdmc:/config/amazon-remote-module/control-diag1.tmp";
 #endif
 #endif
-enum class CommandKind : std::uint32_t { Arm = 1, Link = 2, Stop = 3, CheckController = 4 };
+enum class CommandKind : std::uint32_t { Arm = 1, Link = 2, Stop = 3, CheckController = 4
+#ifdef ARMODULE_NAV15
+    , Enroll = 5
+#endif
+};
 enum class ControllerCheck : std::uint32_t { NotRun, Passed, Failed };
 enum class State : std::uint32_t { Idle, Scanning, Linking, Ready, Stopped, Suspended };
 struct Command {
@@ -142,7 +149,12 @@ inline std::uint32_t StatusChecksum(const Status &s) {
 inline bool ValidCommand(const Command &c, std::uint64_t instance,
         std::uint64_t last_sequence, std::uint64_t now) {
     return c.magic == Magic && c.version == Version && !c.reserved && instance && c.instance == instance &&
-        c.kind >= unsigned(CommandKind::Arm) && c.kind <= unsigned(CommandKind::CheckController) &&
+        c.kind >= unsigned(CommandKind::Arm) && c.kind <=
+#ifdef ARMODULE_NAV15
+        unsigned(CommandKind::Enroll) &&
+#else
+        unsigned(CommandKind::CheckController) &&
+#endif
         c.sequence && c.sequence > last_sequence && c.issued_ms && now >= c.issued_ms && now-c.issued_ms <= 2000;
 }
 inline bool FreshStatus(const Status &s, std::uint64_t now) {

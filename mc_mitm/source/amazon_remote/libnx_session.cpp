@@ -837,6 +837,68 @@ Result LibnxSession::CheckCurrentTarget() {
     }
     return matches == 1 ? 0 : Invalid();
 }
+namespace {
+BtdrvBleAdvertisePacketParameter EnrollmentParameter() {
+    // AD-derived query/enrollment hypothesis, NOT a proven vendor schema.
+    BtdrvBleAdvertisePacketParameter p{};p.company_id=0x0171;
+    const u8 bytes[]{0x04,0x27,0x02,0x7d,0,0};std::copy_n(bytes,6,p.pattern_data);return p;
+}
+}
+void LibnxSession::EnrollmentFinish(EnrollmentState state,Result result) {
+    enrollment_.state=unsigned(state);enrollment_.result=result;
+    enrollment_.checksum=EnrollmentChecksum(enrollment_);
+    Log("ENROLLMENT state=%u Result=%08lx request_issued=%u before=%u/%u after=%u/%u; listed_is_not_encryption_or_reboot_persistence=1",
+        enrollment_.state,static_cast<unsigned long>(result),enrollment_.request_issued,
+        enrollment_.before_count,enrollment_.before_matches,enrollment_.after_count,enrollment_.after_matches);
+}
+Result LibnxSession::ReadEnrollmentList(std::uint32_t &count,std::uint32_t &matches) {
+    count=matches=0;std::array<BtdrvAddress,10> addresses{};u8 n{};
+    const auto rc=btmuBleGetPairedDevices(EnrollmentParameter(),addresses.data(),addresses.size(),&n);
+    if(R_FAILED(rc))return rc;
+    count=n;if(n>addresses.size())return Invalid();
+    for(unsigned i=0;i<n;++i)matches+=!std::memcmp(&addresses[i],&target_,sizeof target_);
+    return matches<=1?0:Invalid();
+}
+Result LibnxSession::EnrollOnce(std::uint64_t instance,EnrollmentIntent persist_intent) {
+    if(enrollment_consumed_)return Invalid();
+    enrollment_consumed_=true;enrollment_.instance=instance;
+    enrollment_.requested_ms=armTicksToNs(armGetSystemTick())/1000000;
+    const auto refuse=[&](Result rc){EnrollmentFinish(EnrollmentState::Refused,rc);return rc;};
+    if(!instance || !persist_intent || !input_budget_.Sustained() || !initialized_ || !native_open_ || !native_requests_ ||
+       !input_diagnostic_ || !have_connection_ || !connection_ || connection_==0xffffffff || !Ready() ||
+       !fingerprint_logged_ || !security_read_logged_ || !inputs_loaded_ || decoder_.Buttons() ||
+       !enrollment_.requested_ms || input_budget_.Expired(linked_ms_,enrollment_.requested_ms))return refuse(Invalid());
+    auto rc=CheckCurrentTarget();if(R_FAILED(rc))return refuse(rc);
+    enrollment_.connection=connection_;
+    enrollment_.before_result=ReadEnrollmentList(enrollment_.before_count,enrollment_.before_matches);
+    if(R_FAILED(enrollment_.before_result))return refuse(enrollment_.before_result);
+    if(enrollment_.before_matches) {EnrollmentFinish(EnrollmentState::AlreadyListed,0);return 0;}
+    // Never request a new entry in a full scope, to avoid implicit eviction.
+    if(enrollment_.before_count>=10)return refuse(Invalid());
+    EnrollmentFinish(EnrollmentState::Prepared,0);
+    if(!persist_intent(enrollment_))return refuse(Invalid());
+    // Revalidate AFTER durable intent; a handle may change during SD I/O.
+    rc=CheckCurrentTarget();if(R_FAILED(rc))return refuse(rc);
+    const auto now=armTicksToNs(armGetSystemTick())/1000000;
+    if(now<enrollment_.requested_ms || now-enrollment_.requested_ms>2000 || input_budget_.Expired(linked_ms_,now))return refuse(Invalid());
+    enrollment_.request_issued=1;
+    rc=btmuBlePairDevice(connection_,EnrollmentParameter());
+    Log("API=btmuBlePairDevice(operator enrollment; AD-derived0171/0427027d0000) Result=%08lx; one request only, parameter semantics/persistence UNVERIFIED",static_cast<unsigned long>(rc));
+    if(R_FAILED(rc)){EnrollmentFinish(EnrollmentState::Failed,rc);return rc;}
+    enrollment_.deadline_ms=now+10000;EnrollmentFinish(EnrollmentState::Accepted,0);return 0;
+}
+void LibnxSession::PollEnrollment(std::uint64_t now) {
+    if(enrollment_.state!=unsigned(EnrollmentState::Accepted))return;
+    if(now<enrollment_.requested_ms || now>=enrollment_.deadline_ms){EnrollmentFinish(EnrollmentState::TimedOut,Invalid());return;}
+    if(enrollment_.last_query_ms && now-enrollment_.last_query_ms<500)return;
+    enrollment_.last_query_ms=now;
+    const auto current=CheckCurrentTarget();
+    if(R_FAILED(current)){EnrollmentFinish(EnrollmentState::Failed,current);return;}
+    enrollment_.after_result=ReadEnrollmentList(enrollment_.after_count,enrollment_.after_matches);
+    if(R_FAILED(enrollment_.after_result))EnrollmentFinish(EnrollmentState::Failed,enrollment_.after_result);
+    else if(enrollment_.after_matches==1)EnrollmentFinish(EnrollmentState::Listed,0);
+    else enrollment_.checksum=EnrollmentChecksum(enrollment_);
+}
 Result LibnxSession::PollIdentity(std::uint64_t now) {
     if (!client_.Tick(now)) return Invalid(); // Expire before consuming completion.
     if (input_diagnostic_ && input_budget_.Expired(linked_ms_,now)) {
@@ -844,6 +906,7 @@ Result LibnxSession::PollIdentity(std::uint64_t now) {
             "INPUT_DIAGNOSTIC fixed90s connected-session limit reached; no reconnect or automatic security retry");
         return Invalid();
     }
+    PollEnrollment(now);
     if (input_diagnostic_ && pairing_event_open_) {
         const auto hint = eventWait(&pairing_event_, 0);
         if (R_SUCCEEDED(hint)) Log("Generic BTM pairing hint observed; no target-specific security/bond claim; no PIN/SSP response performed");
@@ -933,6 +996,7 @@ Result LibnxSession::PollIdentity(std::uint64_t now) {
     return 0;
 }
 void LibnxSession::Close() {
+    if(enrollment_.state==unsigned(EnrollmentState::Accepted))EnrollmentFinish(EnrollmentState::Cancelled,Invalid());
     if (!initialized_) return;
     const auto cleanup = [&](const char *operation, Result rc) {
         if (R_FAILED(rc)) Log("cleanup %s failed: Result=%08lx", operation, static_cast<unsigned long>(rc));
