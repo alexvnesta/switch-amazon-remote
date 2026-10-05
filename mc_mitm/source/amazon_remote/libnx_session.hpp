@@ -47,6 +47,10 @@ public:
     // clients. Does not enroll, connect, replace client ownership or radio state.
     Result ReadEnrollmentContext(std::uint64_t instance,EnrollmentContextRecord &out);
 private:
+#ifdef ARMODULE_NAV17
+    void LogServiceUuid(const BtdevGattService &service,std::size_t index,const char *phase);
+    void ReadServiceUuidCensus(std::uint64_t instance,Result binding_before);
+#endif
     Result ReadEnrollmentList(std::uint32_t &count,std::uint32_t &matches);
     void PollEnrollment(std::uint64_t now);
     void EnrollmentFinish(EnrollmentState state,Result result);

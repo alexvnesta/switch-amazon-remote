@@ -2,6 +2,7 @@
 #include "../mc_mitm/source/amazon_remote/libnx_session.hpp"
 #include "../mc_mitm/source/amazon_remote/k7q3m7_descriptor.hpp"
 #include "../mc_mitm/source/amazon_remote/cached_characteristic_getter.hpp"
+#include "../mc_mitm/source/amazon_remote/service_uuid_census.hpp"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -33,6 +34,7 @@ struct FakeState {
     unsigned pair_variant{},pair_calls{},paired_getters{},intent_calls{};bool listed{},system_enrollment{};
     unsigned user_opens{},user_closes{},sys_opens{},sys_closes{},flag_queries{},system_connection_queries{};
     bool context_active{};unsigned context_variant{};
+    unsigned census_variant{};u64 cached_aruid=0xffffffffffffffffULL;
     std::deque<BtdrvBleEventInfo> events; std::vector<std::string> logs;
 } f;
 BtdrvGattAttributeUuid U(u16 value) { BtdrvGattAttributeUuid u{}; u.size=2; u.uuid[0]=value&255; u.uuid[1]=value>>8; return u; }
@@ -489,9 +491,17 @@ Result btmConfigureBleMtu(u32 connection,u16 mtu) { assert(f.system && connectio
 Result btmGetBleMtu(u32 connection,u16 *mtu) { assert(f.system && connection==4);*mtu=247;return 0; }
 Result btmGetGattServices(u32 connection,BtmGattService *out,u8 count,u8 *total) {
     assert(f.system);++f.system_getters;std::array<BtdevGattService,100> fixture{};
+    if(f.context_active && f.census_variant==4)return 84;
+    if(f.context_active && f.census_variant==5){*total=100;return 0;}
     f.fixture=true;const auto rc=btdevGetGattServices(connection,fixture.data(),count,total);f.fixture=false;
     for (u8 i=0;i<*total;++i) { out[i]={};out[i].uuid=fixture[i].attr.uuid;out[i].handle=fixture[i].attr.handle;
         out[i].instance_id=fixture[i].instance_id;out[i].end_group_handle=fixture[i].end_group_handle;out[i].primary_service=fixture[i].primary_service; }
+    if(f.context_active && f.census_variant>=1 && f.census_variant<=3) {
+        *total=4;out[3]={};out[3].uuid.size=f.census_variant==3?17:16;
+        std::copy(BtmManagedProfileUuid.begin(),BtmManagedProfileUuid.end(),out[3].uuid.uuid);
+        if(f.census_variant==2)out[3].uuid.uuid[0]^=1;
+        out[3].handle=0xfca2;out[3].end_group_handle=0xfcac;out[3].primary_service=1;
+    }
     return rc;
 }
 Result btmGetGattCharacteristics(u32 connection,u16 service,BtmGattCharacteristic *out,u8 count,u8 *total) {
@@ -571,7 +581,39 @@ Result FakeServiceDispatchInput(Service *s,u32 cmd,const void *input,std::size_t
     if (f.drop_native_events) f.events.clear();
     return rc;
 }
+u64 appletGetAppletResourceUserId(){return f.cached_aruid;}
 int main() {
+#ifdef ARMODULE_NAV17
+    assert(!InspectServiceUuid(16,nullptr).valid_length);
+    assert(!InspectServiceUuid(0xffffffff,BtmManagedProfileUuid.data()).valid_length);
+    assert(!InspectServiceUuid(17,BtmManagedProfileUuid.data()).valid_length);
+    assert(InspectServiceUuid(16,BtmManagedProfileUuid.data()).managed_profile_match);
+    assert(!InspectServiceUuid(2,BtmManagedProfileUuid.data()).managed_profile_match);
+    for(unsigned variant=0;variant<7;++variant) {
+        Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;
+        LibnxSession remote(Log,true,true,true,true,true,true);Start(remote);
+        assert(!Advance(remote) && remote.Ready());
+        f.logs.clear();f.context_active=true;f.census_variant=variant;
+        if(variant==6)f.cached_aruid=0;
+        const auto opens=f.system_opens,reads=f.characteristic_reads,writes=f.writes,connects=f.connects;
+        EnrollmentContextRecord r{};
+        assert(!remote.ReadEnrollmentContext(42,r) && ValidEnrollmentContext(r));
+        assert(!r.before_binding && !r.after_binding);
+        assert(f.system_opens==opens && f.characteristic_reads==reads && f.writes==writes && f.connects==connects);
+        assert(!f.pair_calls && !f.disconnects && Logged("SERVICE_CENSUS_BEGIN instance=42") && Logged("SERVICE_CENSUS_END instance=42"));
+        assert(Logged(variant==6?"cached_client_aruid=0 aruid_zero=1":"cached_client_aruid=18446744073709551615 aruid_zero=0"));
+        if(variant==1)assert(Logged("raw=6c1ce0b45d736a8a1a4ca54a263edcad managed_profile_match=1") && Logged("managed_profile_matches=1 cache_rows_complete=1"));
+        if(variant==2)assert(Logged("raw=6d1ce0b45d736a8a1a4ca54a263edcad managed_profile_match=0"));
+        if(variant==3)assert(Logged("size=17 valid=0 raw=INVALID") && Logged("invalid_uuid=1"));
+        if(variant>=3 && variant<=5)assert(Logged("cache_rows_complete=0"));
+        else assert(Logged("cache_rows_complete=1"));
+        for(const auto &line:f.logs)if(line.starts_with("SERVICE_CENSUS_END"))assert(line.ends_with("physical_discovery_unverified=1"));
+        const auto getters=f.system_getters;EnrollmentContextRecord duplicate{};
+        assert(remote.ReadEnrollmentContext(42,duplicate) && f.system_getters==getters && !f.pair_calls);
+        remote.Close();assert(!f.disconnects);
+    }
+    std::cout<<"PASS Navigation17 census:7 actual getter adapter scenarios, full128 UUID/ARUID, malformed/capacity/API errors, exact-target binding, bounded logging and no extra read/write/connect/pair commands. NOT hardware proof.\n";
+#endif
     GoodFlow(); FingerprintUnchanged();
     for(unsigned variant=0;variant<3;++variant)SustainedFlow(variant);
     for(bool system:{false,true})for(unsigned variant=0;variant<23;++variant)EnrollmentFlow(variant,system);

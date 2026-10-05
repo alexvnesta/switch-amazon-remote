@@ -2,7 +2,9 @@
 #pragma once
 #include "native_hdls.hpp"
 #include "protocol.hpp"
-#ifdef ARMODULE_NAV16
+#ifdef ARMODULE_NAV17
+#include "navigation17_identity.hpp"
+#elif defined(ARMODULE_NAV16)
 #include "navigation16_identity.hpp"
 #elif defined(ARMODULE_NAV15_SYSTEM)
 #include "navigation15s_identity.hpp"

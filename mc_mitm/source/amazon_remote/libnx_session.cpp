@@ -10,6 +10,7 @@
 #include "ble_preflight.hpp"
 #include "scan_cache_census.hpp"
 #include "input_diagnostic_policy.hpp"
+#include "service_uuid_census.hpp"
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
@@ -426,6 +427,9 @@ Result LibnxSession::LoadFingerprintCache(std::uint32_t connection) {
         const bool required = uuid == 0x180a || uuid == 0x1812;
         Log("Fingerprint service handle=%04x end=%04x short=%04x primary=%u required=%u; unrelated_records_uninterpreted=1",
             s.attr.handle, s.end_group_handle, uuid, s.primary_service, required);
+#ifdef ARMODULE_NAV17
+        LogServiceUuid(s,i,"fingerprint");
+#endif
         if (required && (s.instance_id > 255 || s.attr.connection_handle != connection)) return Invalid();
         service_views[i] = {Kind::Service, s.attr.handle, s.end_group_handle, uuid, 0,
             static_cast<u8>(required ? s.instance_id : 0), s.primary_service};
@@ -861,6 +865,42 @@ Result LibnxSession::ReadEnrollmentList(std::uint32_t &count,std::uint32_t &matc
     for(unsigned i=0;i<n;++i)matches+=!std::memcmp(&addresses[i],&target_,sizeof target_);
     return matches<=1?0:Invalid();
 }
+#ifdef ARMODULE_NAV17
+void LibnxSession::LogServiceUuid(const BtdevGattService &s,std::size_t index,const char *phase) {
+    const auto uuid=InspectServiceUuid(s.attr.uuid.size,s.attr.uuid.uuid);
+    char hex[33]{};
+    if(uuid.valid_length)FormatHex(hex,sizeof hex,uuid.bytes.data(),uuid.size);
+    Log("SERVICE_UUID phase=%s index=%zu conn=%lu handle=%04x end=%04x instance=%lu primary=%u size=%lu valid=%u raw=%s managed_profile_match=%u",
+        phase,index,static_cast<unsigned long>(s.attr.connection_handle),s.attr.handle,s.end_group_handle,
+        static_cast<unsigned long>(s.instance_id),s.primary_service,static_cast<unsigned long>(uuid.size),
+        uuid.valid_length,uuid.valid_length?hex:"INVALID",uuid.managed_profile_match);
+}
+void LibnxSession::ReadServiceUuidCensus(std::uint64_t instance,Result before) {
+    // Cached client ARUID, not a read of the BTM object's private identity.
+    // Calling this accessor does not initialize applet or change ownership.
+    const auto aruid=appletGetAppletResourceUserId();
+    Log("SERVICE_CENSUS_BEGIN instance=%llu handle=%lu cached_client_aruid=%llu aruid_zero=%u binding_before=%08lx; getter-only server_identity_unverified=1",
+        static_cast<unsigned long long>(instance),static_cast<unsigned long>(connection_),
+        static_cast<unsigned long long>(aruid),aruid==0,static_cast<unsigned long>(before));
+    if(R_FAILED(before))return;
+    std::array<BtdevGattService,100> services{};u8 count=0;
+    const auto rc=gatt_.Services(connection_,services.data(),services.size(),&count);
+    unsigned invalid=0,matches=0,foreign=0;
+    if(R_SUCCEEDED(rc) && count<=services.size()) {
+        for(std::size_t i=0;i<count;++i) {
+            const auto &s=services[i];
+            const auto uuid=InspectServiceUuid(s.attr.uuid.size,s.attr.uuid.uuid);
+            invalid+=!uuid.valid_length;matches+=uuid.managed_profile_match;
+            foreign+=s.attr.connection_handle!=connection_;
+            LogServiceUuid(s,i,"operator");
+        }
+    }
+    const bool complete=R_SUCCEEDED(rc) && count<services.size() && !invalid && !foreign;
+    Log("SERVICE_CENSUS_END instance=%llu Result=%08lx count=%u invalid_uuid=%u foreign_connection=%u managed_profile_matches=%u cache_rows_complete=%u; final_binding_in_context_record=1 physical_discovery_unverified=1",
+        static_cast<unsigned long long>(instance),static_cast<unsigned long>(rc),count,invalid,foreign,matches,
+        complete);
+}
+#endif
 Result LibnxSession::ReadEnrollmentContext(std::uint64_t instance,EnrollmentContextRecord &out) {
     out={};
     if(enrollment_context_consumed_)return Invalid();
@@ -872,6 +912,9 @@ Result LibnxSession::ReadEnrollmentContext(std::uint64_t instance,EnrollmentCont
        !gatt_.System() || input_budget_.Expired(linked_ms_,now))return Invalid();
     out.instance=instance;out.expected_handle=connection_;
     out.before_binding=CheckCurrentTarget();
+#ifdef ARMODULE_NAV17
+    ReadServiceUuidCensus(instance,out.before_binding);
+#endif
     // The existing SDK getter adapter is reused, but its user/system client
     // open/close operations are borrowed. Never replace or close the session's
     // clients. Only the temporary btmsys getter client is opened/closed here.

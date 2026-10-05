@@ -2,7 +2,7 @@ CXX ?= clang++
 CXXFLAGS = -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer
 ROOT := ..
 SOURCES := test_hogp_client.cpp $(ROOT)/mc_mitm/source/amazon_remote/hogp_client.cpp $(ROOT)/mc_mitm/source/amazon_remote/remote_decoder.cpp
-all: test_hogp_client test_input_diagnostic test_libnx_input_adapter test_diagnostic_log test_ble_preflight test_advertisement_policy test_managed_observer test_intent_trace test_ble_header_trace test_scan_cache_census test_target_sighting test_capture_lease test_connection_evidence test_session_budget test_bond_check test_pairing_audit test_enrollment_context
+all: test_hogp_client test_input_diagnostic test_libnx_input_adapter test_libnx_census_adapter test_diagnostic_log test_ble_preflight test_advertisement_policy test_managed_observer test_intent_trace test_ble_header_trace test_scan_cache_census test_target_sighting test_capture_lease test_connection_evidence test_session_budget test_bond_check test_pairing_audit test_enrollment_context
 test_enrollment_context: test_enrollment_context.cpp $(ROOT)/tools/amazon-remote-pairing-audit/audit.hpp $(ROOT)/tools/amazon-remote-pairing-audit/context.hpp $(ROOT)/tools/amazon-remote-pairing-audit/backend.hpp pairing_audit_sdk/switch.h
 	$(CXX) $(CXXFLAGS) -Ipairing_audit_sdk $< -o $@
 test_pairing_audit: test_pairing_audit.cpp $(ROOT)/tools/amazon-remote-pairing-audit/audit.hpp $(ROOT)/tools/amazon-remote-pairing-audit/context.hpp $(ROOT)/tools/amazon-remote-pairing-audit/backend.hpp pairing_audit_sdk/switch.h
@@ -17,6 +17,8 @@ test_input_diagnostic: test_input_diagnostic.cpp $(ROOT)/mc_mitm/source/amazon_r
 	$(CXX) $(CXXFLAGS) $(filter %.cpp,$^) -o $@
 test_libnx_input_adapter: test_libnx_input_adapter.cpp $(ROOT)/mc_mitm/source/amazon_remote/libnx_session.cpp $(ROOT)/mc_mitm/source/amazon_remote/hogp_client.cpp $(ROOT)/mc_mitm/source/amazon_remote/remote_decoder.cpp $(ROOT)/mc_mitm/source/amazon_remote/diagnostic_log.cpp $(wildcard $(ROOT)/mc_mitm/source/amazon_remote/*.hpp) fake_sdk/switch.h
 	$(CXX) $(CXXFLAGS) -Ifake_sdk $(filter %.cpp,$^) -o $@
+test_libnx_census_adapter: test_libnx_input_adapter.cpp $(ROOT)/mc_mitm/source/amazon_remote/libnx_session.cpp $(ROOT)/mc_mitm/source/amazon_remote/hogp_client.cpp $(ROOT)/mc_mitm/source/amazon_remote/remote_decoder.cpp $(ROOT)/mc_mitm/source/amazon_remote/diagnostic_log.cpp $(wildcard $(ROOT)/mc_mitm/source/amazon_remote/*.hpp) fake_sdk/switch.h
+	$(CXX) $(CXXFLAGS) -DARMODULE_NAV17 -Ifake_sdk $(filter %.cpp,$^) -o $@
 test_diagnostic_log: test_diagnostic_log.cpp $(ROOT)/mc_mitm/source/amazon_remote/diagnostic_log.cpp
 	$(CXX) $(CXXFLAGS) $^ -o $@
 test_ble_preflight: test_ble_preflight.cpp $(ROOT)/mc_mitm/source/amazon_remote/ble_preflight.hpp
@@ -45,6 +47,7 @@ test: all
 	cd $(ROOT) && ./host_tests/test_hogp_client
 	./test_input_diagnostic
 	./test_libnx_input_adapter
+	./test_libnx_census_adapter
 	./test_diagnostic_log
 	./test_ble_preflight
 	./test_advertisement_policy

@@ -6,6 +6,7 @@
 #include <cstdint>
 using u8=std::uint8_t; using u16=std::uint16_t; using u32=std::uint32_t; using u64=std::uint64_t;
 using Result=u32;
+u64 appletGetAppletResourceUserId();
 using s32=std::int32_t;
 inline constexpr unsigned Module_Libnx=345, Module_Kernel=1;
 inline constexpr unsigned LibnxError_BadInput=11, LibnxError_NotInitialized=12, LibnxError_IncompatSysVer=13, KernelError_TimedOut=117;

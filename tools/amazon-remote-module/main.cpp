@@ -194,7 +194,9 @@ int main(int, char **) {
 #ifdef ARMODULE_NAV13
 #ifdef ARMODULE_NAV15
     backend.SetLogger(Log,true);
-#ifdef ARMODULE_NAV16
+#ifdef ARMODULE_NAV17
+    Log("NAV17: same navigation; Y getter-only full UUID census plus cached client ARUID; NO PairDevice command, no ownership changes");
+#elif defined(ARMODULE_NAV16)
     Log("NAV16: same navigation; explicit Y getter-only context once at neutral READY; existing clients borrowed; NO PairDevice command");
 #else
     Log("NAV15: setup90s, Ready30min; explicit Y enrollment once after verified neutral READY; AD-derived profile is experimental; no automatic pair/reconnect");
