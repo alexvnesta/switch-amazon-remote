@@ -24,7 +24,10 @@ struct FakeState {
     unsigned connects=0, characteristic_reads=0, security_reads=0, descriptor_reads=0, descriptor_getters=0;
     unsigned registers=0, writes=0, deregisters=0, disconnects=0, pre_metadata=0, post_metadata=0;
     unsigned driver_opens=0,driver_closes=0,driver_queries=0;
-    bool system=false,fixture=false;
+    bool system=false,fixture=false,native_requests=false,drop_native_events=false;
+    Result native_result{};
+    unsigned native_fail_command{};
+    unsigned native_calls{};
     Result system_open_result{},system_mtu_result{};
     unsigned system_opens{},system_closes{},system_mtu_calls{},system_getters{};
     std::deque<BtdrvBleEventInfo> events; std::vector<std::string> logs;
@@ -111,13 +114,21 @@ void SystemFlow(unsigned variant) {
     Sandbox sandbox;f=FakeState{};f.system=true;
     if (variant==1) f.system_open_result=Invalid();
     if (variant==2) f.system_mtu_result=0x5528f;
-    LibnxSession remote(Log,true,true,true);
+    f.native_requests=variant>=3;
+    if (variant==4) f.native_result=0x5528f;
+    if (variant==5) f.drop_native_events=true;
+    LibnxSession remote(Log,true,true,true,f.native_requests);
     if (variant==1) {
         assert(remote.InitializeIdentityTest(f.target)==Invalid() && f.system_opens==1 && !f.system_closes && !f.connects);
         return;
     }
     Start(remote);const auto rc=Advance(remote);
     if (variant==2) assert(rc==0x5528f && !remote.Ready() && !f.characteristic_reads && f.system_mtu_calls==1);
+    else if (variant==4) assert(rc==0x5528f && !remote.Ready() && f.native_calls==1 && !f.registers && !f.writes);
+    else if (variant==5) {
+        assert(!remote.Ready() && !f.registers && !f.writes);
+        f.now+=30000;assert(remote.Poll(f.now)); // no app-path fallback if native event routing fails
+    }
     else {
         assert(!rc && remote.Ready() && remote.FingerprintObserved() && remote.SecurityReadObserved());
         assert(f.system_mtu_calls==1 && f.system_getters>=5 && f.registers==2 && f.writes==2);
@@ -125,6 +136,38 @@ void SystemFlow(unsigned variant) {
         assert(!remote.Poll(f.now) && remote.Buttons()==(Up|Confirm));
     }
     remote.Close();assert(f.system_opens==1 && f.system_closes==1 && !f.disconnects);
+}
+void NativeRequestFailure(unsigned command) {
+    Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;f.native_fail_command=command;
+    LibnxSession remote(Log,true,true,true,true);Start(remote);
+    const auto rc=Advance(remote);
+    assert(rc==0x5528f && !remote.Ready() && f.native_calls && f.connects==1);
+    if(command==90 || command==91 || command==94) assert(!f.writes);
+    remote.Close();assert(f.driver_opens==f.driver_closes && !f.disconnects);
+}
+void NativeWhitelist() {
+    f=FakeState{};f.native_requests=true;NativeGattRequests driver;
+    assert(!driver.Open());BtdrvGattId hid{},information{},report{},map{},pnp{},ccc{},reference{},vendor{};
+    hid.uuid=U(0x1812);information.uuid=U(0x180a);report.uuid=U(0x2a4d);map.uuid=U(0x2a4b);
+    pnp.uuid=U(0x2a50);ccc.uuid=U(0x2902);reference.uuid=U(0x2908);vendor.uuid=U(0xff01);
+    const u8 bad[]{0,0},enable[]{1,0};
+    assert(driver.ReadCharacteristic(4,true,&hid,&vendor,0));
+    assert(driver.ReadCharacteristic(4,true,&information,&pnp,1));
+    assert(driver.ReadCharacteristic(0,true,&hid,&map,0));
+    assert(driver.ReadCharacteristic(4,false,&hid,&map,0));
+    assert(driver.ReadCharacteristic(4,true,&hid,&map,2));
+    assert(driver.ReadDescriptor(4,true,&hid,&report,&ccc,1));
+    assert(driver.Notify(4,true,&hid,&map,true));
+    assert(driver.WriteCcc(4,true,&hid,&report,&ccc,bad,2,1));
+    assert(driver.WriteCcc(4,true,&hid,&report,&ccc,enable,1,1));
+    assert(driver.WriteCcc(4,true,&hid,&report,&vendor,enable,2,1));
+    assert(!f.native_calls);driver.Close();assert(f.driver_opens==1 && f.driver_closes==1);
+}
+void NativeOpenFailure() {
+    Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;f.scenario=DriverOpenError;
+    LibnxSession remote(Log,true,true,true,true);
+    assert(remote.InitializeIdentityTest(f.target)==Invalid());
+    assert(f.system_opens==1 && f.system_closes==1 && f.driver_opens==1 && !f.driver_closes && !f.connects && !f.native_calls);
 }
 void DriverFlow(Scenario scenario) {
     Sandbox sandbox; f=FakeState{}; f.scenario=scenario;
@@ -326,6 +369,7 @@ Result btmGetGattDescriptors(u32 connection,u16 characteristic,BtmGattDescriptor
     const auto rc=btmuGetGattDescriptors(connection,characteristic,out,count,total);f.fixture=false;return rc;
 }
 Result btLeClientReadCharacteristic(u32 connection,bool primary,const BtdrvGattId *service,const BtdrvGattId *characteristic,u8 auth) {
+    assert(!f.native_requests || f.fixture);
     assert(connection==4 && primary); ++f.characteristic_reads;
     const auto uuid=Short(characteristic->uuid);
     if(uuid==0x2a50) { assert(Short(service->uuid)==0x180a && auth==0); const u8 pnp[]{2,0x71,1,0x27,4,0x60,0}; Queue(0,0x180a,uuid,0,pnp,sizeof pnp); }
@@ -337,6 +381,7 @@ Result btLeClientReadCharacteristic(u32 connection,bool primary,const BtdrvGattI
     } return 0;
 }
 Result btLeClientReadDescriptor(u32 connection,bool primary,const BtdrvGattId *service,const BtdrvGattId *characteristic,const BtdrvGattId *descriptor,u8 auth) {
+    assert(!f.native_requests || f.fixture);
     assert(connection==4 && primary && Short(service->uuid)==0x1812 && Short(characteristic->uuid)==0x2a4d && Short(descriptor->uuid)==0x2908 && auth==1);
     ++f.descriptor_reads; const u8 reference[]{u8(characteristic->instance_id==0 ? 1 : characteristic->instance_id==1 ? 2 : 0xef),1};
     if(f.scenario==DriverDeviceShape) {
@@ -347,14 +392,17 @@ Result btLeClientReadDescriptor(u32 connection,bool primary,const BtdrvGattId *s
     Queue(2,0x1812,0x2a4d,0x2908,reference,sizeof reference); return 0;
 }
 Result btLeClientRegisterNotification(u32 connection,bool primary,const BtdrvGattId *service,const BtdrvGattId *characteristic) {
+    assert(!f.native_requests || f.fixture);
     assert(connection==4 && primary && Short(service->uuid)==0x1812 && Short(characteristic->uuid)==0x2a4d);
     assert(f.scenario==DriverDeviceShape ? (characteristic->instance_id==0 || characteristic->instance_id==3) : characteristic->instance_id<2); ++f.registers; return 0;
 }
 Result btLeClientDeregisterNotification(u32 connection,bool primary,const BtdrvGattId*,const BtdrvGattId *characteristic) {
+    assert(!f.native_requests || f.fixture);
     assert(connection==4 && primary && f.connected && !std::memcmp(&f.address,&f.target,sizeof f.target));
     assert(f.scenario==DriverDeviceShape ? (characteristic->instance_id==0 || characteristic->instance_id==3) : characteristic->instance_id<2); ++f.deregisters; return 0;
 }
 Result btLeClientWriteDescriptor(u32 connection,bool primary,const BtdrvGattId *service,const BtdrvGattId *characteristic,const BtdrvGattId *descriptor,const void *data,std::size_t size,u8 auth) {
+    assert(!f.native_requests || f.fixture);
     assert(connection==4 && primary && Short(service->uuid)==0x1812 && Short(characteristic->uuid)==0x2a4d && Short(descriptor->uuid)==0x2902 && auth==1);
     assert(f.scenario==DriverDeviceShape ? (characteristic->instance_id==0 || characteristic->instance_id==3) : characteristic->instance_id<2);
     const auto *value=static_cast<const u8*>(data); assert(size==2 && value[0]==1 && value[1]==0); ++f.writes;
@@ -363,9 +411,37 @@ Result btLeClientWriteDescriptor(u32 connection,bool primary,const BtdrvGattId *
 Result btGetLeEventInfo(void *out,std::size_t size,BtdrvBleEventType *type) {
     assert(size==sizeof(BtdrvBleEventInfo) && !f.events.empty()); std::memcpy(out,&f.events.front(),size); f.events.pop_front(); *type=BtdrvBleEventType_ClientNotify; return 0;
 }
+Result FakeServiceDispatchInput(Service *s,u32 cmd,const void *input,std::size_t size,FakeDispatchParams p) {
+    assert(s->id==80 && f.native_requests && !p.in_send_pid);
+    assert(cmd==90 || cmd==91 || cmd==93 || cmd==94 || cmd==95);++f.native_calls;
+    const auto *raw=static_cast<const u8*>(input);assert(raw[0]==1 && !raw[2] && !raw[3]);
+    u32 connection{};std::memcpy(&connection,raw+4,4);assert(connection==4);
+    BtdrvGattId service{},characteristic{},descriptor{};
+    std::memcpy(&service,raw+8,sizeof service);std::memcpy(&characteristic,raw+32,sizeof characteristic);
+    assert(size==((cmd==91 || cmd==93)?80U:56U));
+    if (size==80) std::memcpy(&descriptor,raw+56,sizeof descriptor);
+    if (cmd==93) assert(p.buffer_attrs[0]==3 && p.buffers[0].size==2 && p.buffers[0].data);
+    else assert(!p.buffer_attrs[0] && !p.buffers[0].size && !p.buffers[0].data);
+    if (f.native_result) return f.native_result;
+    if (f.native_fail_command==cmd) return 0x5528f;
+    f.fixture=true;Result rc=Invalid();
+    switch (cmd) {
+        case 90: rc=btLeClientReadCharacteristic(connection,true,&service,&characteristic,raw[1]);break;
+        case 91: rc=btLeClientReadDescriptor(connection,true,&service,&characteristic,&descriptor,raw[1]);break;
+        case 93: rc=btLeClientWriteDescriptor(connection,true,&service,&characteristic,&descriptor,p.buffers[0].data,p.buffers[0].size,raw[1]);break;
+        case 94: assert(!raw[1]);rc=btLeClientRegisterNotification(connection,true,&service,&characteristic);break;
+        case 95: assert(!raw[1]);rc=btLeClientDeregisterNotification(connection,true,&service,&characteristic);break;
+    }
+    f.fixture=false;
+    if (f.drop_native_events) f.events.clear();
+    return rc;
+}
 int main() {
     GoodFlow(); FingerprintUnchanged();
-    for (unsigned variant=0;variant<3;++variant) SystemFlow(variant);
+    for (unsigned variant=0;variant<6;++variant) SystemFlow(variant);
+    for(unsigned command:{90u,91u,93u,94u})NativeRequestFailure(command);
+    NativeWhitelist();
+    NativeOpenFailure();
     for(auto scenario : {ZeroProperties,DuplicateInstances,SecurityError,SecurityTimeout,TruncatedMetadata,BadDescriptor,BadCccCompletion}) FailureFlow(scenario);
     for(unsigned variant=0;variant<6;++variant) NotificationFailure(variant);
     for(auto scenario : {PreBindingDelay,PostBindingDelay,PreMetadataDelay}) MetadataDeadline(scenario);

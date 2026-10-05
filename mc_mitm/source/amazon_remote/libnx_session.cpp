@@ -95,9 +95,11 @@ Result ReadOnlyScanCacheCensus(BtdrvAddress target, Logger logger) {
     if (logger) logger("Read-only cache census finished; no scan was started/stopped, no cache candidate adopted. Empty user buckets do not prove no over-air target.");
     return first_error;
 }
-LibnxSession::LibnxSession(Logger logger, bool fingerprint_only, bool input_diagnostic, bool system_gatt)
+LibnxSession::LibnxSession(Logger logger, bool fingerprint_only, bool input_diagnostic, bool system_gatt, bool native_requests)
     : client_(K7q3m7Descriptor, sizeof K7q3m7Descriptor, fingerprint_only), logger_(logger),
-      gatt_(system_gatt && fingerprint_only && input_diagnostic), identity_test_(fingerprint_only), input_diagnostic_(fingerprint_only && input_diagnostic) {}
+      gatt_(system_gatt && fingerprint_only && input_diagnostic),
+      native_requests_(native_requests && system_gatt && fingerprint_only && input_diagnostic),
+      identity_test_(fingerprint_only), input_diagnostic_(fingerprint_only && input_diagnostic) {}
 void LibnxSession::Log(const char *format, ...) {
     if (!logger_) return;
     char message[256]; va_list args; va_start(args, format); std::vsnprintf(message, sizeof message, format, args); va_end(args); logger_(message);
@@ -114,6 +116,11 @@ Result LibnxSession::Initialize(BtdrvAddress target) {
     initialized_ = btdev_initialized_ = true;
     rc=gatt_.Open();trace(gatt_.System()?"btmInitialize(system GATT; no radio initialization)":"foreground GATT path",rc);
     if (R_FAILED(rc)) { Close();return rc; }
+    if (native_requests_) {
+        rc=native_.Open();trace("smGetService(btdrv requests ONLY; no driver initialization)",rc);
+        if (R_FAILED(rc)) { Close();return rc; } native_open_=true;
+        Log("Native GATT request path: ARUID-free public driver commands; per-client bt event queue retained, routing UNVERIFIED. No global driver event reads.");
+    }
     rc = btdevAcquireBleGattOperationEvent(&operation_event_);
     trace("btdevAcquireBleGattOperationEvent", rc);
     if (R_FAILED(rc)) { Close(); return rc; }
@@ -606,6 +613,16 @@ Result LibnxSession::Execute(const Request &r) {
         const auto current = armTicksToNs(armGetSystemTick()) / 1000000;
         if (R_FAILED(rc) || !client_.Tick(current) || (input_diagnostic_ && current-linked_ms_ >= 90000)) return R_FAILED(rc) ? rc : Invalid();
     }
+    if (native_requests_) {
+        Result rc=Invalid();const char *api="invalid";
+        switch (r.operation) {
+            case Operation::ReadCharacteristic: api="btdrv ReadGattCharacteristic90";rc=native_.ReadCharacteristic(r.connection,r.service.primary,&service,&characteristic,auth);break;
+            case Operation::ReadDescriptor: api="btdrv ReadGattDescriptor91";rc=native_.ReadDescriptor(r.connection,r.service.primary,&service,&characteristic,&descriptor,auth);break;
+            case Operation::RegisterNotification: api="btdrv RegisterGattNotification94";rc=native_.Notify(r.connection,r.service.primary,&service,&characteristic,true);break;
+            case Operation::WriteDescriptor: api="btdrv WriteGattDescriptor93 CCC0100 only";rc=native_.WriteCcc(r.connection,r.service.primary,&service,&characteristic,&descriptor,r.value.data(),r.size,auth);break;
+        }
+        Log("API=%s Result=%08lx",api,static_cast<unsigned long>(rc));return rc;
+    }
     switch (r.operation) {
         case Operation::ReadCharacteristic: return btLeClientReadCharacteristic(r.connection, r.service.primary, &service, &characteristic, auth);
         case Operation::ReadDescriptor: return btLeClientReadDescriptor(r.connection, r.service.primary, &service, &characteristic, &descriptor, auth);
@@ -919,7 +936,7 @@ void LibnxSession::Close() {
             Log("cleanup report deregistration skipped: configured address/handle no longer bound; no operation on a reassigned handle");
             break;
         }
-        cleanup("deregister own report", btLeClientDeregisterNotification(r.connection, r.service.primary, &service, &characteristic));
+        cleanup("deregister own report", native_requests_?native_.Notify(r.connection,r.service.primary,&service,&characteristic,false):btLeClientDeregisterNotification(r.connection, r.service.primary, &service, &characteristic));
     }
     subscription_count_ = 0;
     if (link_only_) {
@@ -943,6 +960,7 @@ void LibnxSession::Close() {
     if (pairing_event_open_) eventClose(&pairing_event_);
     if (btdev_initialized_) btdevExit(); else btmuExit();
     gatt_.Close();
+    if (native_open_) { native_.Close(); } native_open_=false;
     ResetInput();
     initialized_ = event_open_ = discovery_open_ = connection_requested_ = have_connection_ = information_path_ = hid_path_ = false;
     scan_event_open_ = connection_event_open_ = pairing_event_open_ = authenticated_reads_ = false;

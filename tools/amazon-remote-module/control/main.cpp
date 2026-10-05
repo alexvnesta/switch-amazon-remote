@@ -4,8 +4,12 @@
 #include "../protocol.hpp"
 #include "../io.hpp"
 #include "../startup.hpp"
-#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
 #include "../navigation_sdk.hpp"
+#endif
+#ifdef ARMODULE_NAV12
+#include "../idle_health.hpp"
+#include "../status_reader.hpp"
 #endif
 #include <cstdio>
 #include <cstring>
@@ -24,8 +28,12 @@ int main(int, char **) {
     std::uint64_t last_query = 0;
     armodule::StartupControlReport diagnostic{}, saved{};
     unsigned report_writes = 0; bool report_saved = false;
+#ifdef ARMODULE_NAV12
+    armodule::StatusReadSchedule status_reads;armodule::IdleHealth idle_health;
+    armodule::Status cached_status{};bool cached_valid{};Result status_read_result{};
+#endif
     bool released = false; const char *message = "No command sent. Module must be deliberately enabled first.";
-#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
     armodule::ReleasedLaunchGate launch_gate;
     armodule::NativeAttempt launch{};
     message = "Release all buttons. A once, release ALL buttons for one second to launch IDLE.";
@@ -35,7 +43,18 @@ int main(int, char **) {
         if (down & HidNpadButton_Plus) break;
         if (!(padGetButtons(&pad) & (HidNpadButton_A | HidNpadButton_ZL | HidNpadButton_X | HidNpadButton_Y))) released = true;
         armodule::Status status{};
+#ifdef ARMODULE_NAV12
+        if (status_reads.Due(Now())) {
+            auto *fs=fsdevGetDeviceFileSystem("sdmc");
+            status_read_result=fs?armodule::ReadStatusFrame(*fs,status,Now()):MAKERESULT(Module_Libnx,LibnxError_NotInitialized);
+            if (!status_read_result) { cached_status=status;cached_valid=true; }
+            else if (status_read_result!=0xe02) cached_valid=false;
+        }
+        status=cached_status;
+        bool fresh=cached_valid && armodule::FreshStatus(status,Now());
+#else
         bool fresh = armodule::ReadExact(armodule::StatusPath, status) && armodule::FreshStatus(status, Now());
+#endif
         if (!last_query || Now()-last_query >= 1000) {
             diagnostic = {}; diagnostic.now_ms = Now();
             auto result = pmdmntInitialize();
@@ -54,11 +73,14 @@ int main(int, char **) {
             }
             last_query = diagnostic.now_ms;
         }
-#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
         // Separate namespace plus a live PM query and matching early checkpoint.
         fresh = fresh && !diagnostic.process_query_result && diagnostic.process_id &&
             diagnostic.startup_valid && !diagnostic.startup.result &&
             status.instance==diagnostic.startup.instance && diagnostic.startup.now_ms<=status.now_ms;
+#ifdef ARMODULE_NAV12
+        if (fresh) idle_health.Observe(status,Now());else idle_health.Reset();
+#endif
         if (!fresh && launch_gate.Poll(Now(), down==HidNpadButton_A && padGetButtons(&pad)==HidNpadButton_A,
                                       padGetButtons(&pad)==0)) {
             message=armodule::RequestNavigationLaunch(launch);
@@ -71,9 +93,16 @@ int main(int, char **) {
                 (requested & HidNpadButton_A) ? armodule::CommandKind::Arm :
                 (requested & HidNpadButton_Y) ? armodule::CommandKind::CheckController : armodule::CommandKind::Link;
             const bool allowed = fresh &&
+#ifdef ARMODULE_NAV12
+                status.last_sequence>=last_send &&
+#endif
                 (!armodule::StartupDiagnosticOnly || kind == armodule::CommandKind::Stop || kind == armodule::CommandKind::CheckController) &&
                 (kind == armodule::CommandKind::Stop ||
-                 (kind == armodule::CommandKind::Arm && status.state == unsigned(armodule::State::Idle)) ||
+                 (kind == armodule::CommandKind::Arm && status.state == unsigned(armodule::State::Idle)
+#ifdef ARMODULE_NAV12
+                    && idle_health.Ready(Now())
+#endif
+                 ) ||
                  (kind == armodule::CommandKind::CheckController && status.state == unsigned(armodule::State::Idle) &&
                   status.controller_check == unsigned(armodule::ControllerCheck::NotRun)) ||
                  (kind == armodule::CommandKind::Link && status.state == unsigned(armodule::State::Scanning) && status.link_ready));
@@ -84,7 +113,11 @@ int main(int, char **) {
                 else {
                     armodule::Command command{}; command.kind = unsigned(kind); command.instance = status.instance;
                     command.issued_ms = Now(); command.sequence = previous+1;
-                    if (armodule::Publish(armodule::CommandTemp, armodule::CommandPath, command)) {
+                    if (
+#ifdef ARMODULE_NAV12
+                        armodule::NavigationAbsent(armodule::CommandPath) && armodule::NavigationAbsent(armodule::CommandTemp) &&
+#endif
+                        armodule::Publish(armodule::CommandTemp, armodule::CommandPath, command)) {
                         last_send = command.sequence; message = "Command published. Check state/log for actual acknowledgement.";
                     } else message = "Command publication failed. Existing temp file is preserved.";
                 }
@@ -93,8 +126,10 @@ int main(int, char **) {
         if (requested) released = false; // Require a fresh release before another physical command.
         if (!last_draw || Now()-last_draw >= 250 || requested) {
             consoleClear();
-#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
-#ifdef ARMODULE_NAV11
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
+#ifdef ARMODULE_NAV12
+            std::printf("Amazon Remote Navigation 12 - stability preflight / native requests\n\n");
+#elif defined(ARMODULE_NAV11)
             std::printf("Amazon Remote Navigation 11 - owned first status write\n\n");
 #elif defined(ARMODULE_NAV10)
             std::printf("Amazon Remote Navigation 10 - system BTM / status checksum\n\n");
@@ -114,6 +149,10 @@ int main(int, char **) {
                 fresh && status.instance == diagnostic.startup.instance ? "YES" : "UNCONFIRMED (may be an earlier boot)");
             else std::printf("No valid early SD checkpoint. Loader/SM/FS remain unresolved.\n");
             std::printf("FTP diagnostic snapshot: %s\n\n", report_saved ? "SAVED" : "NOT SAVED");
+#ifdef ARMODULE_NAV12
+            std::printf("IDLE health: %us/15s %s   Status read Result=%08lx\n",idle_health.Seconds(),idle_health.Ready(Now())?"PASSED":"WAIT",static_cast<unsigned long>(status_read_result));
+            std::printf("Do NOT arm/flash remote until IDLE health PASSED. Then A -> flash -> Link_READY=1 -> ZL.\n\n");
+#endif
             if (fresh) {
                 constexpr const char *checks[] = {"NOT RUN", "PASSED (service replies only)", "FAILED"};
                 std::printf("State=%s Result=%08lx Link_READY=%u Pad_attached=%u\nRemote_buttons=%08lx Acknowledged_sequence=%llu\n",
@@ -125,7 +164,7 @@ int main(int, char **) {
             }
             else std::printf("No current module status. No Bluetooth action permitted.\n");
             std::printf("\n%s\n\n", message);
-#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
             std::printf("One attempt,90s connected limit. No reconnect/autoboot.\nAfter READY: + exits; try D-pad/OK/Back on HOME.\nNo wake or microphone support is claimed.\n");
 #else
             std::printf("Startup diagnosis only. No Bluetooth/pairing commands.\nNo wake or microphone support is claimed.\n");

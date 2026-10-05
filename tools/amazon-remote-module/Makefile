@@ -130,6 +130,22 @@ build/navigation11-control.nacp: Makefile | build/exefs
 	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Navigation 11" "switch-amazon-remote contributors" "0.2.0-a2-nav11" $@
 build/amazon-remote-navigation11.nro: build/navigation11-control.elf build/navigation11-control.nacp
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/navigation11-control.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
+build/nav12-module.elf: main.cpp $(TRANSPORT) $(HEADERS) Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) -DARMODULE_NAV12 $(LDFLAGS) -Wl,-Map,build/nav12-module.map main.cpp $(TRANSPORT) $(LIBS) -o $@
+build/nav12-exefs/main: build/nav12-module.elf
+	mkdir -p build/nav12-exefs
+	$(DEVKITPRO)/tools/bin/elf2nso $< $@
+build/nav12-exefs/main.npdm: module-nav12.json
+	mkdir -p build/nav12-exefs
+	$(DEVKITPRO)/tools/bin/npdmtool $< $@
+build/nav12-exefs.nsp: build/nav12-exefs/main build/nav12-exefs/main.npdm
+	$(DEVKITPRO)/tools/bin/build_pfs0 build/nav12-exefs $@
+build/navigation12-control.elf: control/main.cpp $(HEADERS) Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) -DARMODULE_NAV12 $(LDFLAGS) control/main.cpp $(LIBS) -o $@
+build/navigation12-control.nacp: Makefile | build/exefs
+	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Navigation 12" "switch-amazon-remote contributors" "0.2.0-a2-nav12" $@
+build/amazon-remote-navigation12.nro: build/navigation12-control.elf build/navigation12-control.nacp
+	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/navigation12-control.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
 build/exefs:
 	mkdir -p $@
 host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp tests/test_launch.cpp tests/test_launch_sdk.cpp tests/fake_sdk/switch.h hdls_backend.hpp controller.hpp protocol.hpp io.hpp config.hpp startup.hpp startup_storage.hpp launch_test.hpp launch_sdk.hpp $(SOURCE)/remote_decoder.hpp
@@ -162,5 +178,9 @@ host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp test
 	./build/test_status_storage11
 	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -DARMODULE_NAV11 -Itests/fake_sdk tests/test_navigation.cpp -o build/test_navigation11
 	./build/test_navigation11
+	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -DARMODULE_NAV12 -Itests/fake_sdk tests/test_navigation.cpp -o build/test_navigation12
+	./build/test_navigation12
+	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -DARMODULE_NAV12 -Itests/fake_sdk tests/test_status_contention.cpp -o build/test_status_contention
+	./build/test_status_contention
 HOST_CXX ?= c++
 .PHONY: all host-test

@@ -10,8 +10,11 @@
 #include "protocol.hpp"
 #include "config.hpp"
 #include "startup_storage.hpp"
-#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
+#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
 #include "status_storage.hpp"
+#endif
+#ifdef ARMODULE_NAV12
+#include "idle_health.hpp"
 #endif
 #include <cstdio>
 #include <cstring>
@@ -152,8 +155,13 @@ int main(int, char **) {
     Checkpoint(armodule::StartupStage::PscRegister, rc);
     ResultLog("psc register custom id0xbe (device validation pending)", rc);
     if (R_FAILED(rc)) { pscmExit(); return 0; }
-#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
+#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
+#ifdef ARMODULE_NAV12
+    amazon_remote::LibnxSession remote(Log,true,true,true,true);
+    armodule::IdleHealth idle_health;armodule::StatusWriteSchedule status_schedule;bool idle_pass_logged{},status_checkpointed{};
+#else
     amazon_remote::LibnxSession remote(Log,true,true,true);
+#endif
     armodule::StatusWriter status_writer;std::uint64_t status_error_since{};
 #else
     amazon_remote::LibnxSession remote(Log, true, true);
@@ -165,7 +173,10 @@ int main(int, char **) {
     Service mc{}; bool capture_owned = false, awake = true, shutdown = false;
     BtdrvAddress target{}; amazon_remote::CaptureLeaseWire lease{};
     armodule::Status status{}; status.instance = instance;
-    std::uint64_t last_status = 0, last_clock = start_ms;
+    std::uint64_t last_clock = start_ms;
+#ifndef ARMODULE_NAV12
+    std::uint64_t last_status = 0;
+#endif
     const auto cleanup = [&] {
         const auto pad_result = controller.Stop();
         const auto final_trace=backend.Trace(instance,Now());
@@ -237,6 +248,11 @@ int main(int, char **) {
                 ResultLog("operator neutral HDLS attach/detach; replies only, not navigation proof", rc);
                 if (R_FAILED(rc) || !log_healthy) stop(R_FAILED(rc) ? rc : Invalid());
             }
+#ifdef ARMODULE_NAV12
+            else if (command.kind==unsigned(armodule::CommandKind::Arm) && !idle_health.Ready(Now())) {
+                Log("ARM refused:15s stable IDLE heartbeat required; no Bluetooth initialized");
+            }
+#endif
             else if (command.kind == unsigned(armodule::CommandKind::Arm) && policy.Get() == armodule::State::Idle) {
                 if (!policy.Arm() || !log_healthy || Pending() || !Target(target)) rc = Invalid();
                 else rc = Preflight();
@@ -291,7 +307,11 @@ int main(int, char **) {
                 rc = ReadLease(mc, lease); if (R_FAILED(rc) || !LiveLease(lease, Now())) stop(R_FAILED(rc) ? rc : Invalid());
             }
         }
+#ifdef ARMODULE_NAV12
+        if (status_schedule.Due(Now())) {
+#else
         if (!last_status || Now()-last_status >= 500) {
+#endif
             amazon_remote::SightingWire wire{};
             status.link_ready = sighting(wire);
             status.state = unsigned(policy.Get()); status.now_ms = Now(); status.capture_deadline = lease.deadline_boot_ms;
@@ -300,7 +320,7 @@ int main(int, char **) {
             status.acknowledged_buttons = controller.LastAcknowledgedButtons();
             status.successful_writes = controller.SuccessfulWrites();
             status.pad_cleanup_result = controller.CleanupError();
-#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
+#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
             status.reserved=armodule::StatusChecksum(status);
             const auto status_rc=status_writer.WriteRecord(startup_fs,status);
             const bool published=R_SUCCEEDED(status_rc);
@@ -313,15 +333,35 @@ int main(int, char **) {
             const bool published = armodule::Publish(armodule::StatusTemp, armodule::StatusPath, status);
 #endif
             // Checkpoint once on first status or failure, not every500ms forever.
+#ifdef ARMODULE_NAV12
+            if (published && (!status_checkpointed || startup_record.result)) {
+                Checkpoint(armodule::StartupStage::Status,0);status_checkpointed=true;
+            }
+            if (published) idle_health.Observe(status,Now());
+            else if (status_rc!=0xe02 || status_writer.permanent) idle_health.Reset();
+            if (idle_health.Ready(Now()) && !idle_pass_logged) {
+                Log("IDLE_HEALTH_PASSED:15s distinct fresh status publications; NO Bluetooth activity yet");idle_pass_logged=true;
+            }
+            if (status_schedule.Complete(status_rc,status_writer.permanent,Now())) {
+                Checkpoint(armodule::StartupStage::Status,status_rc);stop(status_rc);break;
+            }
+#else
             if (!last_status || !published || startup_record.result) Checkpoint(armodule::StartupStage::Status, published ? 0 : Invalid());
-#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
+#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
             if (!published && armodule::StatusFailureExpired(status_error_since,Now(),status_writer.permanent)) { stop(status_rc);break; }
 #else
             if (!published) { stop(Invalid()); break; }
 #endif
+#endif
+#ifndef ARMODULE_NAV12
             last_status = status.now_ms;
+#endif
         }
+#ifdef ARMODULE_NAV12
+        svcSleepThread((policy.Active() || status_schedule.Retrying()) ? 20000000 : 100000000);
+#else
         svcSleepThread(policy.Active() ? 20000000 : 100000000);
+#endif
     }
     if (awake) cleanup();
     eventClose(&pm.event); pscPmModuleFinalize(&pm); pscPmModuleClose(&pm); pscmExit();

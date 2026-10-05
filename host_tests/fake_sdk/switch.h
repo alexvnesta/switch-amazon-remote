@@ -17,6 +17,10 @@ bool serviceIsActive(Service*); void serviceClose(Service*);
 bool hosversionBefore(unsigned,unsigned,unsigned);
 Result smGetService(Service*,const char*);
 Result FakeServiceDispatch(Service*,u32,const void*,std::size_t,void*,std::size_t);
+inline constexpr unsigned SfBufferAttr_HipcPointer=1,SfBufferAttr_In=2;
+struct FakeDispatchParams { unsigned buffer_attrs[1]{};struct { const void *data{};std::size_t size{}; } buffers[1];bool in_send_pid{}; };
+Result FakeServiceDispatchInput(Service*,u32,const void*,std::size_t,FakeDispatchParams);
+#define serviceDispatchIn(srv,cmd,input,...) FakeServiceDispatchInput(srv,cmd,&(input),sizeof(input),FakeDispatchParams{__VA_ARGS__})
 #define serviceDispatchInOut(srv,cmd,input,output) FakeServiceDispatch(srv,cmd,&(input),sizeof(input),&(output),sizeof(output))
 struct BtdrvAddress { u8 address[6]{}; };
 struct BtdrvGattAttributeUuid { u32 size{}; u8 uuid[16]{}; };
