@@ -4,7 +4,7 @@
 #include "../protocol.hpp"
 #include "../io.hpp"
 #include "../startup.hpp"
-#ifdef ARMODULE_NAV9
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10)
 #include "../navigation_sdk.hpp"
 #endif
 #include <cstdio>
@@ -25,7 +25,7 @@ int main(int, char **) {
     armodule::StartupControlReport diagnostic{}, saved{};
     unsigned report_writes = 0; bool report_saved = false;
     bool released = false; const char *message = "No command sent. Module must be deliberately enabled first.";
-#ifdef ARMODULE_NAV9
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10)
     armodule::ReleasedLaunchGate launch_gate;
     armodule::NativeAttempt launch{};
     message = "Release all buttons. A once, release ALL buttons for one second to launch IDLE.";
@@ -54,7 +54,7 @@ int main(int, char **) {
             }
             last_query = diagnostic.now_ms;
         }
-#ifdef ARMODULE_NAV9
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10)
         // Separate namespace plus a live PM query and matching early checkpoint.
         fresh = fresh && !diagnostic.process_query_result && diagnostic.process_id &&
             diagnostic.startup_valid && !diagnostic.startup.result &&
@@ -93,8 +93,12 @@ int main(int, char **) {
         if (requested) released = false; // Require a fresh release before another physical command.
         if (!last_draw || Now()-last_draw >= 250 || requested) {
             consoleClear();
-#ifdef ARMODULE_NAV9
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10)
+#ifdef ARMODULE_NAV10
+            std::printf("Amazon Remote Navigation 10 - system BTM / status checksum\n\n");
+#else
             std::printf("Amazon Remote Navigation 9 - supervised test\n\n");
+#endif
             std::printf("No status: A once, release ALL buttons1s to launch IDLE\nIDLE: release, A arms60s capture; flash remote\nSCANNING and Link_READY=1: ZL once connects\nX: stop/release pad   +: exit UI (module remains)\n\n");
 #else
             std::printf("Amazon Remote Startup Check - alpha.2 diag1\n\n");
@@ -119,7 +123,7 @@ int main(int, char **) {
             }
             else std::printf("No current module status. No Bluetooth action permitted.\n");
             std::printf("\n%s\n\n", message);
-#ifdef ARMODULE_NAV9
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10)
             std::printf("One attempt,90s connected limit. No reconnect/autoboot.\nAfter READY: + exits; try D-pad/OK/Back on HOME.\nNo wake or microphone support is claimed.\n");
 #else
             std::printf("Startup diagnosis only. No Bluetooth/pairing commands.\nNo wake or microphone support is claimed.\n");

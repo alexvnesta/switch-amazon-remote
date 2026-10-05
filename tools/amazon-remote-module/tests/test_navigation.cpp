@@ -5,6 +5,21 @@
 #include <filesystem>
 #include <string_view>
 namespace {
+#ifdef ARMODULE_NAV10
+constexpr auto ExpectedId=0x010000000000a4d4ull;
+constexpr unsigned ExpectedQueries=4,ExpectedMagic=0x41524c3a;
+constexpr char ExpectedDirectory[]="sdmc:/config/amazon-remote-nav10";
+constexpr char ExpectedStartup[]="/config/amazon-remote-nav10/startup.bin";
+constexpr char BinaryDirectory[]="sdmc:/atmosphere/contents/010000000000a4d4";
+constexpr char BinaryPath[]="sdmc:/atmosphere/contents/010000000000a4d4/exefs.nsp";
+#else
+constexpr auto ExpectedId=0x010000000000a4d3ull;
+constexpr unsigned ExpectedQueries=3,ExpectedMagic=0x41524c39;
+constexpr char ExpectedDirectory[]="sdmc:/config/amazon-remote-nav9";
+constexpr char ExpectedStartup[]="/config/amazon-remote-nav9/startup.bin";
+constexpr char BinaryDirectory[]="sdmc:/atmosphere/contents/010000000000a4d3";
+constexpr char BinaryPath[]="sdmc:/atmosphere/contents/010000000000a4d3/exefs.nsp";
+#endif
 Result query_init{},query_rc=0x20f,shell_rc{},launch_rc{};
 u64 query_pid{},tick=5000,active_id{};
 unsigned query_calls{},query_exits{},shell_calls{},launch_calls{},shell_exits{};
@@ -36,7 +51,7 @@ u64 armGetSystemTick() { return tick; }
 u64 armTicksToNs(u64 t) { return t*1000000; }
 Result pmdmntInitialize() { return query_init; }
 Result pmdmntGetProcessId(u64 *pid,u64 id) {
-    assert(id==armodule::SafeModuleProgramId || id==armodule::NativeHdlsProgramId || id==armodule::ModuleProgramId);
+    assert(id==armodule::SafeModuleProgramId || id==armodule::NativeHdlsProgramId || id==armodule::ModuleProgramId || id==0x010000000000a4d3);
     ++query_calls;*pid=id==active_id?201:query_pid;return id==active_id?0:query_rc;
 }
 void pmdmntExit() { ++query_exits; }
@@ -52,17 +67,17 @@ void sha256ContextUpdate(Sha256Context *,const void *,std::size_t n) { hashed+=n
 void sha256ContextGetHash(Sha256Context *,void *out) { std::memcpy(out,sha.data(),32); }
 int main() {
     using namespace armodule;
-    static_assert(!StartupDiagnosticOnly && ModuleProgramId==0x010000000000a4d3);
-    static_assert(std::string_view(Directory)=="sdmc:/config/amazon-remote-nav9");
-    static_assert(std::string_view(StartupFsPath)=="/config/amazon-remote-nav9/startup.bin");
+    static_assert(!StartupDiagnosticOnly && ModuleProgramId==ExpectedId);
+    static_assert(std::string_view(Directory)==ExpectedDirectory);
+    static_assert(std::string_view(StartupFsPath)==ExpectedStartup);
     auto prior=Prior();assert(PriorNativePassed(prior));
     prior.trace.detach_result=1;prior.trace.checksum=HdlsTraceChecksum(prior.trace);prior.checksum=NativeChecksum(prior);
     assert(!PriorNativePassed(prior));prior=Prior();prior.checksum^=1;assert(!PriorNativePassed(prior));prior=Prior();
     char directory[]="/tmp/amazon-navigation-test-XXXXXX";assert(mkdtemp(directory));
     const auto original=std::filesystem::current_path();std::filesystem::current_path(directory);
     for (auto p:{Directory,"sdmc:/config/amazon-remote-module","sdmc:/config/amazon-remote",
-                 "sdmc:/atmosphere/contents/010000000000a4d3"}) std::filesystem::create_directories(p);
-    constexpr char path[]="sdmc:/atmosphere/contents/010000000000a4d3/exefs.nsp";
+                 BinaryDirectory}) std::filesystem::create_directories(p);
+    const auto path=BinaryPath;
     std::array<std::uint8_t,32> hash{};assert(!VerifyNavigationBinary(hash));
     Write(path,NavigationModuleSize-1);assert(!VerifyNavigationBinary(hash));
     Write(path,NavigationModuleSize+1);assert(!VerifyNavigationBinary(hash));
@@ -77,19 +92,19 @@ int main() {
     tick=10001;RequestNavigationLaunch(attempt);assert(!query_calls);Reset();
     query_init=77;RequestNavigationLaunch(attempt);assert(!query_calls && !query_exits && !shell_calls);Reset();
     query_rc=78;RequestNavigationLaunch(attempt);assert(query_exits==1 && !shell_calls);Reset();
-    for (auto id:{SafeModuleProgramId,NativeHdlsProgramId,ModuleProgramId}) {
+    for (auto id:{SafeModuleProgramId,NativeHdlsProgramId,std::uint64_t(0x010000000000a4d3),ModuleProgramId}) {
         active_id=id;RequestNavigationLaunch(attempt);assert(!shell_calls && query_exits==1);Reset();
     }
-    sha[0]^=1;RequestNavigationLaunch(attempt);assert(!shell_calls && query_calls==3);Reset();
+    sha[0]^=1;RequestNavigationLaunch(attempt);assert(!shell_calls && query_calls==ExpectedQueries);Reset();
     shell_rc=79;RequestNavigationLaunch(attempt);assert(!launch_calls && !shell_exits);
-    NativeAttempt saved{};assert(ReadExact(NavigationAttemptPath,saved) && saved.magic==0x41524c39 && saved.checksum==NativeChecksum(saved) && saved.stage==2);
+    NativeAttempt saved{};assert(ReadExact(NavigationAttemptPath,saved) && saved.magic==ExpectedMagic && saved.checksum==NativeChecksum(saved) && saved.stage==2);
     RequestNavigationLaunch(attempt);assert(shell_calls==1);Reset();
     launch_rc=80;RequestNavigationLaunch(attempt);assert(launch_calls==1 && shell_exits==1);
     assert(ReadExact(NavigationAttemptPath,saved) && saved.launch_result==80 && !saved.returned_pid);Reset();
-    RequestNavigationLaunch(attempt);assert(launch_calls==1 && shell_exits==1 && query_calls==3);
-    assert(ReadExact(NavigationAttemptPath,saved) && saved.magic==0x41524c39 && saved.stage==3 && !saved.launch_result &&
+    RequestNavigationLaunch(attempt);assert(launch_calls==1 && shell_exits==1 && query_calls==ExpectedQueries);
+    assert(ReadExact(NavigationAttemptPath,saved) && saved.magic==ExpectedMagic && saved.stage==3 && !saved.launch_result &&
         saved.returned_pid==200 && saved.module_sha256==NavigationModuleHash && saved.checksum==NativeChecksum(saved));
     RequestNavigationLaunch(attempt);assert(launch_calls==1);
     std::filesystem::current_path(original);std::filesystem::remove_all(directory);
-    std::puts("PASS navigation9: isolated namespace, prior native proof, reboot/lock/process guards, exact binary pin, exclusive one-shot zero-flag safe-ID launch; NOT navigation hardware proof.");
+    std::puts("PASS navigation: isolated namespace, prior native proof, reboot/lock/process guards, exact binary pin, exclusive one-shot zero-flag safe-ID launch; NOT navigation hardware proof.");
 }

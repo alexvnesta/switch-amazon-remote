@@ -4,6 +4,7 @@
 #include "hogp_client.hpp"
 #include "remote_decoder.hpp"
 #include "target_sighting.hpp"
+#include "managed_gatt.hpp"
 
 namespace amazon_remote {
 using Logger = void (*)(const char *message);
@@ -13,7 +14,7 @@ Result ReadOnlyScanCacheCensus(BtdrvAddress target, Logger logger);
 // Single-thread owner. Uses btdev's user path; never consumes btdrv managed events.
 class LibnxSession {
 public:
-    explicit LibnxSession(Logger logger, bool fingerprint_only = false, bool input_diagnostic = false);
+    explicit LibnxSession(Logger logger, bool fingerprint_only = false, bool input_diagnostic = false, bool system_gatt = false);
     Result Initialize(BtdrvAddress target);
     Result InitializeLinkOnly(BtdrvAddress target);
     Result InitializeIdentityTest(BtdrvAddress target);
@@ -53,6 +54,7 @@ private:
     HogpClient client_;
     RemoteDecoder decoder_;
     Logger logger_;
+    ManagedGatt gatt_;
     BtdrvAddress target_{};
     Event operation_event_{};
     Event discovery_event_{};

@@ -10,6 +10,9 @@
 #include "protocol.hpp"
 #include "config.hpp"
 #include "startup_storage.hpp"
+#ifdef ARMODULE_NAV10
+#include "status_storage.hpp"
+#endif
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
@@ -138,7 +141,7 @@ int main(int, char **) {
     if (!log_healthy) return 0;
     Log(armodule::StartupDiagnosticOnly ?
         "Amazon Remote startup-diag1: Bluetooth commands disabled; neutral Y check only" :
-        "Amazon Remote navigation9: IDLE until operator A/ZL; bounded session, no boot scan/reconnect/wake");
+        "Amazon Remote navigation: IDLE until operator A/ZL; bounded session, no boot scan/reconnect/wake");
     // Current public BTM-layout workaround has device evidence only on 22.5.0.
     Checkpoint(armodule::StartupStage::FirmwareGuard, hosversionGet() == MAKEHOSVERSION(22,5,0) ? 0 : Invalid());
     if (hosversionGet() != MAKEHOSVERSION(22,5,0)) { Log("Unsupported firmware: no Bluetooth or controller setup"); return 0; }
@@ -149,7 +152,12 @@ int main(int, char **) {
     Checkpoint(armodule::StartupStage::PscRegister, rc);
     ResultLog("psc register custom id0xbe (device validation pending)", rc);
     if (R_FAILED(rc)) { pscmExit(); return 0; }
+#ifdef ARMODULE_NAV10
+    amazon_remote::LibnxSession remote(Log,true,true,true);
+    armodule::StatusWriter status_writer;std::uint64_t status_error_since{};
+#else
     amazon_remote::LibnxSession remote(Log, true, true);
+#endif
     armodule::HdlsBackend backend;
     armodule::OwnedController controller(backend);
     armodule::SessionPolicy policy;
@@ -239,7 +247,7 @@ int main(int, char **) {
                 if (R_SUCCEEDED(rc)) rc = ReadLease(mc, lease);
                 if (R_SUCCEEDED(rc) && !LiveLease(lease, Now())) rc = Invalid();
                 if (R_SUCCEEDED(rc)) rc = remote.InitializeIdentityTest(target);
-                ResultLog("ARUID0 user-path initialization (not yet device-proven)", rc);
+                ResultLog("explicit bounded Bluetooth session initialization", rc);
                 if (R_SUCCEEDED(rc) && !log_healthy) rc = Invalid();
                 if (R_SUCCEEDED(rc)) rc = remote.StartLinkOnlyScan(Now());
                 if (R_FAILED(rc)) stop(rc);
@@ -292,10 +300,25 @@ int main(int, char **) {
             status.acknowledged_buttons = controller.LastAcknowledgedButtons();
             status.successful_writes = controller.SuccessfulWrites();
             status.pad_cleanup_result = controller.CleanupError();
+#ifdef ARMODULE_NAV10
+            status.reserved=armodule::StatusChecksum(status);
+            const auto status_rc=status_writer.WriteRecord(startup_fs,status);
+            const bool published=R_SUCCEEDED(status_rc);
+            if (!published) {
+                if (!status_error_since) status_error_since=Now();
+                char detail[160]{};std::snprintf(detail,sizeof detail,"Status write step=%u Result=%08lx permanent=%u",status_writer.step,
+                    static_cast<unsigned long>(status_rc),status_writer.permanent);Log(detail);
+            } else status_error_since=0;
+#else
             const bool published = armodule::Publish(armodule::StatusTemp, armodule::StatusPath, status);
+#endif
             // Checkpoint once on first status or failure, not every500ms forever.
-            if (!last_status || !published) Checkpoint(armodule::StartupStage::Status, published ? 0 : Invalid());
+            if (!last_status || !published || startup_record.result) Checkpoint(armodule::StartupStage::Status, published ? 0 : Invalid());
+#ifdef ARMODULE_NAV10
+            if (!published && armodule::StatusFailureExpired(status_error_since,Now(),status_writer.permanent)) { stop(status_rc);break; }
+#else
             if (!published) { stop(Invalid()); break; }
+#endif
             last_status = status.now_ms;
         }
         svcSleepThread(policy.Active() ? 20000000 : 100000000);

@@ -24,6 +24,9 @@ struct FakeState {
     unsigned connects=0, characteristic_reads=0, security_reads=0, descriptor_reads=0, descriptor_getters=0;
     unsigned registers=0, writes=0, deregisters=0, disconnects=0, pre_metadata=0, post_metadata=0;
     unsigned driver_opens=0,driver_closes=0,driver_queries=0;
+    bool system=false,fixture=false;
+    Result system_open_result{},system_mtu_result{};
+    unsigned system_opens{},system_closes{},system_mtu_calls{},system_getters{};
     std::deque<BtdrvBleEventInfo> events; std::vector<std::string> logs;
 } f;
 BtdrvGattAttributeUuid U(u16 value) { BtdrvGattAttributeUuid u{}; u.size=2; u.uuid[0]=value&255; u.uuid[1]=value>>8; return u; }
@@ -103,6 +106,25 @@ void GoodFlow() {
     assert(Logged("buttons") && Logged("INPUT_SUBSCRIPTIONS_READY"));
     remote.Close(); assert(!remote.Buttons() && f.deregisters==2 && !f.disconnects);
     assert(std::filesystem::exists("sdmc:/config/amazon-remote/link-test-pending.txt"));
+}
+void SystemFlow(unsigned variant) {
+    Sandbox sandbox;f=FakeState{};f.system=true;
+    if (variant==1) f.system_open_result=Invalid();
+    if (variant==2) f.system_mtu_result=0x5528f;
+    LibnxSession remote(Log,true,true,true);
+    if (variant==1) {
+        assert(remote.InitializeIdentityTest(f.target)==Invalid() && f.system_opens==1 && !f.system_closes && !f.connects);
+        return;
+    }
+    Start(remote);const auto rc=Advance(remote);
+    if (variant==2) assert(rc==0x5528f && !remote.Ready() && !f.characteristic_reads && f.system_mtu_calls==1);
+    else {
+        assert(!rc && remote.Ready() && remote.FingerprintObserved() && remote.SecurityReadObserved());
+        assert(f.system_mtu_calls==1 && f.system_getters>=5 && f.registers==2 && f.writes==2);
+        const u8 key[]{0x52,0x58,0};Queue(4,0x1812,0x2a4d,0,key,3);f.now+=20;
+        assert(!remote.Poll(f.now) && remote.Buttons()==(Up|Confirm));
+    }
+    remote.Close();assert(f.system_opens==1 && f.system_closes==1 && !f.disconnects);
 }
 void DriverFlow(Scenario scenario) {
     Sandbox sandbox; f=FakeState{}; f.scenario=scenario;
@@ -237,21 +259,24 @@ Result btmuGetBleScanResultsForSmartDevice(BtdrvBleScanResult*,u8,u8 *total) { *
 Result btmuBleConnect(BtdrvAddress target) { assert(!std::memcmp(&target,&f.target,sizeof target)); ++f.connects; f.connected=f.discovery=true; return 0; }
 Result btdevConnectToGattServer(BtdrvAddress target) { return btmuBleConnect(target); }
 Result btdevDisconnectFromGattServer(u32) { ++f.disconnects; return Invalid(); }
-Result btdevConfigureBleMtu(u32 connection,u16 mtu) { assert(connection==4 && mtu==512); return 0; }
-Result btdevGetBleMtu(u32 connection,u16 *mtu) { assert(connection==4); *mtu=247; return 0; }
+Result btdevConfigureBleMtu(u32 connection,u16 mtu) { assert(!f.system && connection==4 && mtu==512); return 0; }
+Result btdevGetBleMtu(u32 connection,u16 *mtu) { assert(!f.system && connection==4); *mtu=247; return 0; }
 Result btdevGetGattServices(u32 connection,BtdevGattService *services,u8 count,u8 *total) {
+    assert(!f.system || f.fixture);
     assert(connection==4 && count>=3); *total=3;
     services[0]={{3,U(0x180a),0x12,4},0,0x24,true};
     services[1]={{3,U(0x1812),0x25,4},0,0x41,true};
     services[2]={{3,U(0x180f),0x26,4},0,0,false}; return 0;
 }
 Result btdevGattServiceGetCharacteristics(BtdevGattService *service,BtdevGattCharacteristic *chars,u8 count,u8 *total) {
+    assert(!f.system || f.fixture);
     assert(count>=1); *total=1;
     const bool hid=Short(service->attr.uuid)==0x1812;
     chars[0]={{1,U(hid?0x2a4b:0x2a50),u16(hid?0x2e:0x24),4},0,0}; return 0;
 }
 Result btdevGattCharacteristicGetDescriptors(BtdevGattCharacteristic*,BtdevGattDescriptor*,u8,u8*) { return Invalid(); }
 Result btmuGetGattCharacteristics(u32 connection,u16 service,BtmGattCharacteristic *chars,u8 count,u8 *total) {
+    assert(!f.system || f.fixture);
     assert(connection==4 && service==0x25 && count>=4);
     if(f.security_requested) ++f.post_metadata; else ++f.pre_metadata;
     if(f.scenario==PreMetadataDelay && !f.security_requested) f.now+=90000;
@@ -273,11 +298,32 @@ Result btmuGetGattCharacteristics(u32 connection,u16 service,BtmGattCharacterist
     } return 0;
 }
 Result btmuGetGattDescriptors(u32 connection,u16 characteristic,BtmGattDescriptor *descs,u8 count,u8 *total) {
+    assert(!f.system || f.fixture);
     assert(connection==4 && count>=2 && characteristic>=0x30 && characteristic<=(f.scenario==DriverDeviceShape ? 0x3f : 0x38)); ++f.descriptor_getters;
     if(f.scenario==DriverDeviceShape && characteristic==0x38) { *total=1; descs[0].handle=0x39; descs[0].uuid=U(0x2908); return 0; }
     if(f.scenario==BadDescriptor) { *total=1; descs[0].handle=characteristic; descs[0].uuid=U(0x2908); return 0; }
     *total=2; descs[0].handle=characteristic+1; descs[0].uuid=U(0x2902);
     descs[1].handle=characteristic+2; descs[1].uuid=U(0x2908); return 0;
+}
+Result btmInitialize() { assert(f.system);++f.system_opens;return f.system_open_result; }
+void btmExit() { assert(f.system);++f.system_closes; }
+Result btmConfigureBleMtu(u32 connection,u16 mtu) { assert(f.system && connection==4 && mtu==512);++f.system_mtu_calls;return f.system_mtu_result; }
+Result btmGetBleMtu(u32 connection,u16 *mtu) { assert(f.system && connection==4);*mtu=247;return 0; }
+Result btmGetGattServices(u32 connection,BtmGattService *out,u8 count,u8 *total) {
+    assert(f.system);++f.system_getters;std::array<BtdevGattService,100> fixture{};
+    f.fixture=true;const auto rc=btdevGetGattServices(connection,fixture.data(),count,total);f.fixture=false;
+    for (u8 i=0;i<*total;++i) { out[i]={};out[i].uuid=fixture[i].attr.uuid;out[i].handle=fixture[i].attr.handle;
+        out[i].instance_id=fixture[i].instance_id;out[i].end_group_handle=fixture[i].end_group_handle;out[i].primary_service=fixture[i].primary_service; }
+    return rc;
+}
+Result btmGetGattCharacteristics(u32 connection,u16 service,BtmGattCharacteristic *out,u8 count,u8 *total) {
+    assert(f.system);++f.system_getters;
+    if (service==0x12) { *total=1;out[0]={};out[0].uuid=U(0x2a50);out[0].handle=0x24;return 0; }
+    f.fixture=true;const auto rc=btmuGetGattCharacteristics(connection,service,out,count,total);f.fixture=false;return rc;
+}
+Result btmGetGattDescriptors(u32 connection,u16 characteristic,BtmGattDescriptor *out,u8 count,u8 *total) {
+    assert(f.system);++f.system_getters;f.fixture=true;
+    const auto rc=btmuGetGattDescriptors(connection,characteristic,out,count,total);f.fixture=false;return rc;
 }
 Result btLeClientReadCharacteristic(u32 connection,bool primary,const BtdrvGattId *service,const BtdrvGattId *characteristic,u8 auth) {
     assert(connection==4 && primary); ++f.characteristic_reads;
@@ -319,6 +365,7 @@ Result btGetLeEventInfo(void *out,std::size_t size,BtdrvBleEventType *type) {
 }
 int main() {
     GoodFlow(); FingerprintUnchanged();
+    for (unsigned variant=0;variant<3;++variant) SystemFlow(variant);
     for(auto scenario : {ZeroProperties,DuplicateInstances,SecurityError,SecurityTimeout,TruncatedMetadata,BadDescriptor,BadCccCompletion}) FailureFlow(scenario);
     for(unsigned variant=0;variant<6;++variant) NotificationFailure(variant);
     for(auto scenario : {PreBindingDelay,PostBindingDelay,PreMetadataDelay}) MetadataDeadline(scenario);

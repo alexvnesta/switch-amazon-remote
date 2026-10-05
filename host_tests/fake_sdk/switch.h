@@ -42,6 +42,12 @@ struct BtdevGattCharacteristic { BtdevGattAttribute attr{}; u16 instance_id{}; u
 struct BtdevGattDescriptor { BtdevGattAttribute attr{}; };
 struct BtmGattCharacteristic { u8 unknown[4]{}; BtdrvGattAttributeUuid uuid{}; u16 handle{}; u8 pad[2]{}; u16 instance_id{}; u8 properties{},tail[5]{}; };
 struct BtmGattDescriptor { u8 unknown[4]{}; BtdrvGattAttributeUuid uuid{}; u16 handle{}; u8 tail[6]{}; };
+struct BtmGattService { BtdrvGattAttributeUuid uuid{}; u16 handle{},instance_id{},end_group_handle{}; u8 primary_service{}; };
+Result btmInitialize(); void btmExit();
+Result btmConfigureBleMtu(u32,u16); Result btmGetBleMtu(u32,u16*);
+Result btmGetGattServices(u32,BtmGattService*,u8,u8*);
+Result btmGetGattCharacteristics(u32,u16,BtmGattCharacteristic*,u8,u8*);
+Result btmGetGattDescriptors(u32,u16,BtmGattDescriptor*,u8,u8*);
 u64 armGetSystemTick(); u64 armTicksToNs(u64 ticks);
 Result eventWait(Event*,u64); void eventClose(Event*);
 Result btmuInitialize(); void btmuExit(); Result btdevInitialize(); void btdevExit();

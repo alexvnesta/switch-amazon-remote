@@ -95,8 +95,9 @@ Result ReadOnlyScanCacheCensus(BtdrvAddress target, Logger logger) {
     if (logger) logger("Read-only cache census finished; no scan was started/stopped, no cache candidate adopted. Empty user buckets do not prove no over-air target.");
     return first_error;
 }
-LibnxSession::LibnxSession(Logger logger, bool fingerprint_only, bool input_diagnostic)
-    : client_(K7q3m7Descriptor, sizeof K7q3m7Descriptor, fingerprint_only), logger_(logger), identity_test_(fingerprint_only), input_diagnostic_(fingerprint_only && input_diagnostic) {}
+LibnxSession::LibnxSession(Logger logger, bool fingerprint_only, bool input_diagnostic, bool system_gatt)
+    : client_(K7q3m7Descriptor, sizeof K7q3m7Descriptor, fingerprint_only), logger_(logger),
+      gatt_(system_gatt && fingerprint_only && input_diagnostic), identity_test_(fingerprint_only), input_diagnostic_(fingerprint_only && input_diagnostic) {}
 void LibnxSession::Log(const char *format, ...) {
     if (!logger_) return;
     char message[256]; va_list args; va_start(args, format); std::vsnprintf(message, sizeof message, format, args); va_end(args); logger_(message);
@@ -111,6 +112,8 @@ Result LibnxSession::Initialize(BtdrvAddress target) {
     };
     Result rc = btdevInitialize(); trace("btdevInitialize", rc); if (R_FAILED(rc)) return rc;
     initialized_ = btdev_initialized_ = true;
+    rc=gatt_.Open();trace(gatt_.System()?"btmInitialize(system GATT; no radio initialization)":"foreground GATT path",rc);
+    if (R_FAILED(rc)) { Close();return rc; }
     rc = btdevAcquireBleGattOperationEvent(&operation_event_);
     trace("btdevAcquireBleGattOperationEvent", rc);
     if (R_FAILED(rc)) { Close(); return rc; }
@@ -344,7 +347,7 @@ Result LibnxSession::LoadCache(std::uint32_t connection) {
     };
     u8 service_count = 0;
     auto rc = binding(); if (R_FAILED(rc)) return rc;
-    rc = btdevGetGattServices(connection, services.data(), services.size(), &service_count);
+    rc = gatt_.Services(connection, services.data(), services.size(), &service_count);
     if (R_FAILED(rc)) return rc;
     if (!service_count) return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
     if (service_count >= services.size()) return Invalid();
@@ -359,7 +362,7 @@ Result LibnxSession::LoadCache(std::uint32_t connection) {
                      static_cast<u8>(service.instance_id), service.primary_service})) return Invalid();
         u8 characteristic_count = 0;
         rc = binding(); if (R_FAILED(rc)) return rc;
-        rc = btdevGattServiceGetCharacteristics(&service, characteristics.data(), characteristics.size(), &characteristic_count);
+        rc = gatt_.Characteristics(&service, characteristics.data(), characteristics.size(), &characteristic_count);
         if (R_FAILED(rc)) return rc;
         if (characteristic_count >= characteristics.size()) return Invalid();
         for (std::size_t c = 0; c < characteristic_count; ++c) {
@@ -372,7 +375,7 @@ Result LibnxSession::LoadCache(std::uint32_t connection) {
                          characteristic.properties, static_cast<u8>(characteristic.instance_id), false})) return Invalid();
             u8 descriptor_count = 0;
             rc = binding(); if (R_FAILED(rc)) return rc;
-            rc = btdevGattCharacteristicGetDescriptors(&characteristic, descriptors.data(), descriptors.size(), &descriptor_count);
+            rc = gatt_.Descriptors(&characteristic, descriptors.data(), descriptors.size(), &descriptor_count);
             if (R_FAILED(rc)) return rc;
             if (descriptor_count >= descriptors.size()) return Invalid();
             for (std::size_t d = 0; d < descriptor_count; ++d) {
@@ -403,7 +406,7 @@ Result LibnxSession::LoadFingerprintCache(std::uint32_t connection) {
     std::array<Attribute,2> selected{};
     auto rc = binding(); if (R_FAILED(rc)) return rc;
     u8 count = 0;
-    rc = btdevGetGattServices(connection, services.data(), services.size(), &count);
+    rc = gatt_.Services(connection, services.data(), services.size(), &count);
     Log("Fingerprint service getter Result=%08lx count=%u", static_cast<unsigned long>(rc), count);
     if (R_FAILED(rc)) return rc;
     if (!count) return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
@@ -434,7 +437,7 @@ Result LibnxSession::LoadFingerprintCache(std::uint32_t connection) {
         if (!native) return Invalid();
         rc = binding(); if (R_FAILED(rc)) return rc;
         u8 char_count = 0;
-        rc = btdevGattServiceGetCharacteristics(native, characteristics.data(), characteristics.size(), &char_count);
+        rc = gatt_.Characteristics(native, characteristics.data(), characteristics.size(), &char_count);
         Log("Fingerprint characteristic getter service=%04x Result=%08lx count=%u", wanted.uuid, static_cast<unsigned long>(rc), char_count);
         if (R_FAILED(rc)) return rc;
         if (char_count >= characteristics.size()) return Invalid();
@@ -469,7 +472,7 @@ Result LibnxSession::ReadInputInventory(const char *label, bool adopt) {
     };
     auto rc = binding(); if (R_FAILED(rc)) return rc;
     std::array<BtmGattCharacteristic,100> characteristics{}; u8 count = 0;
-    rc = btmuGetGattCharacteristics(connection_, hid.handle, characteristics.data(), characteristics.size(), &count);
+    rc = gatt_.RawCharacteristics(connection_, hid.handle, characteristics.data(), characteristics.size(), &count);
     Log("HID_METADATA %s Result=%08lx count=%u sdk_record_bytes=%zu; no format guessing or property fabrication", label, static_cast<unsigned long>(rc), count, sizeof(BtmGattCharacteristic));
     if (R_FAILED(rc)) return rc;
     if (!count || count >= characteristics.size()) return Invalid();
@@ -550,7 +553,7 @@ Result LibnxSession::ReadInputInventory(const char *label, bool adopt) {
         if (ShortUuid(c.uuid) != 0x2a4d) continue;
         rc = binding(); if (R_FAILED(rc)) return rc;
         u8 descriptor_count = 0; descriptors.fill({});
-        rc = btmuGetGattDescriptors(connection_, c.handle, descriptors.data(), descriptors.size(), &descriptor_count);
+        rc = gatt_.RawDescriptors(connection_, c.handle, descriptors.data(), descriptors.size(), &descriptor_count);
         Log("Report descriptor getter char=%04x instance=%u Result=%08lx count=%u", c.handle, c.instance_id, static_cast<unsigned long>(rc), descriptor_count);
         if (R_FAILED(rc)) return rc;
         if (!descriptor_count || descriptor_count >= descriptors.size()) return Invalid();
@@ -725,11 +728,11 @@ Result LibnxSession::Poll(std::uint64_t now) {
         return 0;
     }
     if (!mtu_requested_) {
-        rc = btdevConfigureBleMtu(connection_, 0x200);
+        rc = gatt_.ConfigureMtu(connection_, 0x200);
         if (R_FAILED(rc)) return rc;
         mtu_requested_ = true;
     }
-    u16 mtu = 0; rc = btdevGetBleMtu(connection_, &mtu);
+    u16 mtu = 0; rc = gatt_.GetMtu(connection_, &mtu);
     if (R_FAILED(rc)) return rc;
     if (mtu < sizeof K7q3m7Descriptor + 3) {
         if (now - requested_ms_ >= 10000) return Invalid();
@@ -859,13 +862,13 @@ Result LibnxSession::PollIdentity(std::uint64_t now) {
         if (!mtu_requested_) {
             Log("Requesting public MTU512 for149-byte fingerprint read; auth=None, no pairing requested");
             rc = CheckCurrentTarget(); if (R_FAILED(rc)) return rc;
-            rc = btdevConfigureBleMtu(connection_, 0x200);
-            Log("API=btdevConfigureBleMtu Result=%08lx", static_cast<unsigned long>(rc));
+            rc = gatt_.ConfigureMtu(connection_, 0x200);
+            Log("API=%sConfigureBleMtu Result=%08lx",gatt_.System()?"btm":"btdev", static_cast<unsigned long>(rc));
             if (R_FAILED(rc)) return rc;
             mtu_requested_ = true;
         }
-        u16 mtu = 0; rc = btdevGetBleMtu(connection_, &mtu);
-        Log("API=btdevGetBleMtu Result=%08lx mtu=%u", static_cast<unsigned long>(rc), mtu);
+        u16 mtu = 0; rc = gatt_.GetMtu(connection_, &mtu);
+        Log("API=%sGetBleMtu Result=%08lx mtu=%u",gatt_.System()?"btm":"btdev", static_cast<unsigned long>(rc), mtu);
         if (R_FAILED(rc)) return rc;
         const auto current = armTicksToNs(armGetSystemTick()) / 1000000;
         if (current-linked_ms_ >= 20000) return Invalid();
@@ -939,6 +942,7 @@ void LibnxSession::Close() {
     if (connection_event_open_) eventClose(&connection_event_);
     if (pairing_event_open_) eventClose(&pairing_event_);
     if (btdev_initialized_) btdevExit(); else btmuExit();
+    gatt_.Close();
     ResetInput();
     initialized_ = event_open_ = discovery_open_ = connection_requested_ = have_connection_ = information_path_ = hid_path_ = false;
     scan_event_open_ = connection_event_open_ = pairing_event_open_ = authenticated_reads_ = false;

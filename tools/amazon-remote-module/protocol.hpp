@@ -4,7 +4,22 @@
 #include <type_traits>
 
 namespace armodule {
-inline constexpr std::uint32_t Magic = 0x41524d31, Version = 2;
+inline constexpr std::uint32_t Magic = 0x41524d31;
+#ifdef ARMODULE_NAV10
+inline constexpr std::uint32_t Version = 3;
+inline constexpr char Directory[] = "sdmc:/config/amazon-remote-nav10";
+inline constexpr char CommandPath[] = "sdmc:/config/amazon-remote-nav10/command.bin";
+inline constexpr char StatusPath[] = "sdmc:/config/amazon-remote-nav10/status.bin";
+inline constexpr char CommandTemp[] = "sdmc:/config/amazon-remote-nav10/command.tmp";
+inline constexpr char StatusTemp[] = "sdmc:/config/amazon-remote-nav10/status.tmp";
+inline constexpr char EnablePath[] = "sdmc:/config/amazon-remote-nav10/enable.txt";
+inline constexpr char LogPath[] = "sdmc:/config/amazon-remote-nav10/module.log";
+inline constexpr char HdlsPath[] = "sdmc:/config/amazon-remote-nav10/hdls-backend.bin";
+inline constexpr char HdlsTemp[] = "sdmc:/config/amazon-remote-nav10/hdls-backend.tmp";
+inline constexpr char ControlPath[] = "sdmc:/config/amazon-remote-nav10/control.bin";
+inline constexpr char ControlTemp[] = "sdmc:/config/amazon-remote-nav10/control.tmp";
+#else
+inline constexpr std::uint32_t Version = 2;
 #ifdef ARMODULE_NAV9
 inline constexpr char Directory[] = "sdmc:/config/amazon-remote-nav9";
 inline constexpr char CommandPath[] = "sdmc:/config/amazon-remote-nav9/command.bin";
@@ -30,6 +45,7 @@ inline constexpr char HdlsTemp[] = "sdmc:/config/amazon-remote-module/hdls-backe
 inline constexpr char ControlPath[] = "sdmc:/config/amazon-remote-module/control-diag1.bin";
 inline constexpr char ControlTemp[] = "sdmc:/config/amazon-remote-module/control-diag1.tmp";
 #endif
+#endif
 enum class CommandKind : std::uint32_t { Arm = 1, Link = 2, Stop = 3, CheckController = 4 };
 enum class ControllerCheck : std::uint32_t { NotRun, Passed, Failed };
 enum class State : std::uint32_t { Idle, Scanning, Linking, Ready, Stopped, Suspended };
@@ -46,6 +62,12 @@ struct Status {
 };
 static_assert(sizeof(Command) == 40 && sizeof(Status) == 88);
 static_assert(std::is_trivially_copyable_v<Command> && std::is_trivially_copyable_v<Status>);
+inline std::uint32_t StatusChecksum(const Status &s) {
+    const auto *bytes=reinterpret_cast<const unsigned char *>(&s);std::uint32_t hash=2166136261u;
+    for (std::size_t i=0;i<sizeof s;++i)
+        if (i<offsetof(Status,reserved) || i>=offsetof(Status,reserved)+sizeof s.reserved) hash=(hash^bytes[i])*16777619u;
+    return hash;
+}
 inline bool ValidCommand(const Command &c, std::uint64_t instance,
         std::uint64_t last_sequence, std::uint64_t now) {
     return c.magic == Magic && c.version == Version && !c.reserved && instance && c.instance == instance &&
@@ -53,7 +75,8 @@ inline bool ValidCommand(const Command &c, std::uint64_t instance,
         c.sequence && c.sequence > last_sequence && c.issued_ms && now >= c.issued_ms && now-c.issued_ms <= 2000;
 }
 inline bool FreshStatus(const Status &s, std::uint64_t now) {
-    return s.magic == Magic && s.version == Version && !s.reserved && s.instance && s.now_ms &&
+    return s.magic == Magic && s.version == Version &&
+        (Version==3?s.reserved==StatusChecksum(s):!s.reserved) && s.instance && s.now_ms &&
         s.state <= unsigned(State::Suspended) && s.link_ready <= 1 && s.output_attached <= 1 &&
         s.controller_check <= unsigned(ControllerCheck::Failed) &&
         now >= s.now_ms && now-s.now_ms <= 2000;
