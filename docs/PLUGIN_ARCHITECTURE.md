@@ -16,6 +16,12 @@ drop-in implementation of our independently built BLE HID transport. Its
 unpublished BLE branch is not a dependency or source we can promise to ship.
 Reference: https://github.com/ndeadly/MissionControl#usage
 
+The [reuse audit](MISSIONCONTROL_REUSE.md) now includes a local adapter using
+unchanged upstream button/report code, and identifies the actual missing native
+HID registration path. Diagnostic session budgets are temporary guards, not a
+product framework. No native-menu enrollment or observer replacement is enabled
+by that adapter. The working HDLS path remains available as the proven fallback.
+
 Navigation14 verified one manually enrolled K7Q3M7 session and actual HOME input.
 Current code already runs input as a native background process; the companion
 does not deliver input. It still has temporary candidate IDs, a diagnostic

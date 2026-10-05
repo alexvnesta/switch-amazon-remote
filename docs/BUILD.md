@@ -16,6 +16,18 @@ HDLS adapter against a minimal fake SDK; that is not an ABI or permission proof.
 Linux/macOS CI runs those same targets.
 Optional TSAN: `make -C host_tests tsan-capture-lease` (runtime support varies).
 
+An opt-in MissionControl reuse test requires an existing checkout at the public
+pin below. It verifies an unchanged upstream header before compiling tests against
+the real button implementation; it performs no downloads or device access:
+
+```sh
+python3 scripts/test_missioncontrol_reuse.py --source /path/to/MissionControl
+```
+
+The getter-only paired-list diagnostic builds separately with
+`make -C tools/amazon-remote-bond-check`. It neither installs nor activates itself.
+See [reuse evidence and remaining seams](MISSIONCONTROL_REUSE.md).
+
 ## Switch probe and inactive module candidate
 
 Install devkitPro/devkitA64, libnx and the Switch tools using their official
