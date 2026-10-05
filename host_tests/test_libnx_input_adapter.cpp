@@ -30,7 +30,7 @@ struct FakeState {
     unsigned native_calls{};
     Result system_open_result{},system_mtu_result{};
     unsigned system_opens{},system_closes{},system_mtu_calls{},system_getters{};
-    unsigned pair_variant{},pair_calls{},paired_getters{},intent_calls{};bool listed{};
+    unsigned pair_variant{},pair_calls{},paired_getters{},intent_calls{};bool listed{},system_enrollment{};
     std::deque<BtdrvBleEventInfo> events; std::vector<std::string> logs;
 } f;
 BtdrvGattAttributeUuid U(u16 value) { BtdrvGattAttributeUuid u{}; u.size=2; u.uuid[0]=value&255; u.uuid[1]=value>>8; return u; }
@@ -146,9 +146,10 @@ bool EnrollmentIntentPersist(const EnrollmentRecord &r) {
     if(f.pair_variant==11)f.now+=2100;
     return f.pair_variant!=9;
 }
-void EnrollmentFlow(unsigned variant) {
+void EnrollmentFlow(unsigned variant,bool system_enrollment=false) {
     Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;f.pair_variant=variant;
-    LibnxSession remote(Log,true,true,true,true,variant!=1);Start(remote);
+    f.system_enrollment=system_enrollment;
+    LibnxSession remote(Log,true,true,true,true,variant!=1,system_enrollment);Start(remote);
     if(variant!=2)assert(!Advance(remote) && remote.Ready());
     assert(!f.pair_calls && !f.paired_getters && !f.intent_calls); // READY itself never pairs.
     if(variant==3){const u8 keyboard[]{0x52,0,0};Queue(4,0x1812,0x2a4d,0,keyboard,sizeof keyboard);f.now+=20;assert(!remote.Poll(f.now));}
@@ -183,6 +184,28 @@ void EnrollmentFlow(unsigned variant) {
     const auto count=f.pair_calls;assert(remote.EnrollOnce(42,EnrollmentIntentPersist) && f.pair_calls==count);
     assert(remote.Enrollment().checksum==EnrollmentChecksum(remote.Enrollment()));
     remote.Close();assert(!f.disconnects); // No unpair, bond clearing, fake HID lifecycle or ownership override.
+}
+void EnrollmentServiceGuards() {
+    BtdrvBleAdvertisePacketParameter p{};BtdrvAddress addresses[10]{};u8 count{};
+    f=FakeState{};
+    ManagedGatt foreground;
+    assert(foreground.PairDevice(4,p) && foreground.PairedAddresses(p,addresses,10,&count));
+    assert(!foreground.Open());
+    assert(foreground.PairDevice(4,p) && foreground.PairedAddresses(p,addresses,10,&count));foreground.Close();
+    assert(!f.system_opens && !f.pair_calls && !f.paired_getters);
+    f=FakeState{};f.system=true;f.system_open_result=Invalid();
+    ManagedGatt failed(true);assert(failed.Open());
+    assert(failed.PairDevice(4,p) && failed.PairedAddresses(p,addresses,10,&count));failed.Close();
+    assert(!f.system_closes && !f.pair_calls && !f.paired_getters);
+    f=FakeState{};f.system=true;
+    ManagedGatt system(true);
+    assert(system.PairDevice(4,p) && system.PairedAddresses(p,addresses,10,&count));
+    assert(!system.Open());
+    assert(system.PairDevice(0,p) && system.PairDevice(0xffffffff,p));
+    assert(system.PairedAddresses(p,nullptr,10,&count) && system.PairedAddresses(p,addresses,0,&count) &&
+           system.PairedAddresses(p,addresses,11,&count) && system.PairedAddresses(p,addresses,10,nullptr));
+    system.Close();assert(system.PairDevice(4,p) && system.PairedAddresses(p,addresses,10,&count));
+    assert(f.system_opens==1 && f.system_closes==1 && !f.pair_calls && !f.paired_getters);
 }
 void SystemFlow(unsigned variant) {
     Sandbox sandbox;f=FakeState{};f.system=true;
@@ -374,7 +397,8 @@ Result btmuBleGetConnectionState(BtdrvBleConnectionInfo *info,u8 count,u8 *total
 Result btmuGetBleScanResultsForGeneral(BtdrvBleScanResult*,u8,u8 *total) { *total=0; return 0; }
 Result btmuGetBleScanResultsForSmartDevice(BtdrvBleScanResult*,u8,u8 *total) { *total=0; return 0; }
 Result btmuBleConnect(BtdrvAddress target) { assert(!std::memcmp(&target,&f.target,sizeof target)); ++f.connects; f.connected=f.discovery=true; return 0; }
-Result btmuBleGetPairedDevices(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *out,u8 count,u8 *total) {
+static Result PairedDevices(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *out,u8 count,u8 *total,bool system) {
+    assert(system==f.system_enrollment && (!system || (f.system_opens==1 && !f.system_closes)));
     assert(count==10 && p.company_id==0x171);
     const u8 pattern[]{4,0x27,2,0x7d,0,0};assert(!std::memcmp(p.pattern_data,pattern,6));++f.paired_getters;
     if(f.pair_variant==8 || (f.pair_variant==14 && f.pair_calls))return 0x5528f;
@@ -383,13 +407,18 @@ Result btmuBleGetPairedDevices(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *
     if(f.pair_variant==7)out[1]=f.target;
     return 0;
 }
-Result btmuBlePairDevice(u32 connection,BtdrvBleAdvertisePacketParameter p) {
+static Result PairDevice(u32 connection,BtdrvBleAdvertisePacketParameter p,bool system) {
+    assert(system==f.system_enrollment && (!system || (f.system_opens==1 && !f.system_closes)));
     assert(connection==4 && !std::memcmp(&f.address,&f.target,sizeof f.target) &&
            p.company_id==0x171 && f.security_requested && f.intent_calls==1 && !f.pair_calls);
     ++f.pair_calls;
     if(f.pair_variant==12)return 0x5528f;
     f.listed=f.pair_variant!=13;return 0;
 }
+Result btmuBleGetPairedDevices(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *out,u8 count,u8 *total) {return PairedDevices(p,out,count,total,false);}
+Result btmBleGetPairedAddresses(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *out,u8 count,u8 *total) {return PairedDevices(p,out,count,total,true);}
+Result btmuBlePairDevice(u32 connection,BtdrvBleAdvertisePacketParameter p) {return PairDevice(connection,p,false);}
+Result btmBlePairDevice(u32 connection,BtdrvBleAdvertisePacketParameter p) {return PairDevice(connection,p,true);}
 Result btdevConnectToGattServer(BtdrvAddress target) { return btmuBleConnect(target); }
 Result btdevDisconnectFromGattServer(u32) { ++f.disconnects; return Invalid(); }
 Result btdevConfigureBleMtu(u32 connection,u16 mtu) { assert(!f.system && connection==4 && mtu==512); return 0; }
@@ -419,8 +448,8 @@ Result btmuGetGattCharacteristics(u32 connection,u16 service,BtmGattCharacterist
         const u16 handles[]{0x28,0x2a,0x2c,0x2e,0x30,0x34,0x38,0x3b,0x3f};
         const u16 uuids[]{0x2a4a,0x2a4c,0x2a4e,0x2a4b,0x2a4d,0x2a4d,0x2a4d,0x2a4d,0x2a4d};
         for(unsigned i=0;i<9;++i) { chars[i].handle=handles[i]; chars[i].uuid=U(uuids[i]); chars[i].instance_id=i>=4 ? i-4 : 0; chars[i].properties=0; }
-        return 0;
-    }
+    return 0;
+}
     *total=4; chars[0].uuid=U(0x2a4b); chars[0].handle=0x2e;
     for(unsigned i=0;i<3;++i) {
         chars[i+1].uuid=U(0x2a4d); chars[i+1].handle=0x30+i*4;
@@ -529,8 +558,9 @@ Result FakeServiceDispatchInput(Service *s,u32 cmd,const void *input,std::size_t
 int main() {
     GoodFlow(); FingerprintUnchanged();
     for(unsigned variant=0;variant<3;++variant)SustainedFlow(variant);
-    for(unsigned variant=0;variant<23;++variant)EnrollmentFlow(variant);
-    std::cout<<"PASS enrollment transport:23 scenarios, no automatic requests, no duplicate request, exact target/neutral/fingerprint guards and bounded list observation. NOT hardware proof.\n";
+    for(bool system:{false,true})for(unsigned variant=0;variant<23;++variant)EnrollmentFlow(variant,system);
+    EnrollmentServiceGuards();
+    std::cout<<"PASS enrollment transport:46 scenarios across fixed user/system routes; no automatic/duplicate/fallback request; exact target/neutral/fingerprint guards and bounded list observation. NOT hardware proof.\n";
     for (unsigned variant=0;variant<6;++variant) SystemFlow(variant);
     for(unsigned command:{90u,91u,93u,94u})NativeRequestFailure(command);
     NativeWhitelist();

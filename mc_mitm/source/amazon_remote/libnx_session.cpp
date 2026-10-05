@@ -95,8 +95,8 @@ Result ReadOnlyScanCacheCensus(BtdrvAddress target, Logger logger) {
     if (logger) logger("Read-only cache census finished; no scan was started/stopped, no cache candidate adopted. Empty user buckets do not prove no over-air target.");
     return first_error;
 }
-LibnxSession::LibnxSession(Logger logger, bool fingerprint_only, bool input_diagnostic, bool system_gatt, bool native_requests, bool sustained_input)
-    : client_(K7q3m7Descriptor, sizeof K7q3m7Descriptor, fingerprint_only), logger_(logger),
+LibnxSession::LibnxSession(Logger logger, bool fingerprint_only, bool input_diagnostic, bool system_gatt, bool native_requests, bool sustained_input, bool system_enrollment)
+    : system_enrollment_(system_enrollment), client_(K7q3m7Descriptor, sizeof K7q3m7Descriptor, fingerprint_only), logger_(logger),
       gatt_(system_gatt && fingerprint_only && input_diagnostic),
       native_requests_(native_requests && system_gatt && fingerprint_only && input_diagnostic),
       identity_test_(fingerprint_only), input_diagnostic_(fingerprint_only && input_diagnostic),
@@ -853,7 +853,8 @@ void LibnxSession::EnrollmentFinish(EnrollmentState state,Result result) {
 }
 Result LibnxSession::ReadEnrollmentList(std::uint32_t &count,std::uint32_t &matches) {
     count=matches=0;std::array<BtdrvAddress,10> addresses{};u8 n{};
-    const auto rc=btmuBleGetPairedDevices(EnrollmentParameter(),addresses.data(),addresses.size(),&n);
+    const auto rc=system_enrollment_ ? gatt_.PairedAddresses(EnrollmentParameter(),addresses.data(),addresses.size(),&n) :
+        btmuBleGetPairedDevices(EnrollmentParameter(),addresses.data(),addresses.size(),&n);
     if(R_FAILED(rc))return rc;
     count=n;if(n>addresses.size())return Invalid();
     for(unsigned i=0;i<n;++i)matches+=!std::memcmp(&addresses[i],&target_,sizeof target_);
@@ -867,6 +868,7 @@ Result LibnxSession::EnrollOnce(std::uint64_t instance,EnrollmentIntent persist_
     if(!instance || !persist_intent || !input_budget_.Sustained() || !initialized_ || !native_open_ || !native_requests_ ||
        !input_diagnostic_ || !have_connection_ || !connection_ || connection_==0xffffffff || !Ready() ||
        !fingerprint_logged_ || !security_read_logged_ || !inputs_loaded_ || decoder_.Buttons() ||
+       (system_enrollment_ && !gatt_.System()) ||
        !enrollment_.requested_ms || input_budget_.Expired(linked_ms_,enrollment_.requested_ms))return refuse(Invalid());
     auto rc=CheckCurrentTarget();if(R_FAILED(rc))return refuse(rc);
     enrollment_.connection=connection_;
@@ -882,8 +884,12 @@ Result LibnxSession::EnrollOnce(std::uint64_t instance,EnrollmentIntent persist_
     const auto now=armTicksToNs(armGetSystemTick())/1000000;
     if(now<enrollment_.requested_ms || now-enrollment_.requested_ms>2000 || input_budget_.Expired(linked_ms_,now))return refuse(Invalid());
     enrollment_.request_issued=1;
-    rc=btmuBlePairDevice(connection_,EnrollmentParameter());
-    Log("API=btmuBlePairDevice(operator enrollment; AD-derived0171/0427027d0000) Result=%08lx; one request only, parameter semantics/persistence UNVERIFIED",static_cast<unsigned long>(rc));
+    // Fixed route for this session: never retry a rejected request via another
+    // service. System mode requires our already-open background BTM client.
+    rc=system_enrollment_ ? gatt_.PairDevice(connection_,EnrollmentParameter()) :
+        btmuBlePairDevice(connection_,EnrollmentParameter());
+    Log("API=%s(operator enrollment; AD-derived0171/0427027d0000) Result=%08lx; one request only, parameter semantics/persistence UNVERIFIED",
+        system_enrollment_?"btmBlePairDevice":"btmuBlePairDevice",static_cast<unsigned long>(rc));
     if(R_FAILED(rc)){EnrollmentFinish(EnrollmentState::Failed,rc);return rc;}
     enrollment_.deadline_ms=now+10000;EnrollmentFinish(EnrollmentState::Accepted,0);return 0;
 }

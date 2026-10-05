@@ -5,7 +5,14 @@
 #include <filesystem>
 #include <string_view>
 namespace {
-#ifdef ARMODULE_NAV15
+#ifdef ARMODULE_NAV15_SYSTEM
+constexpr auto ExpectedId=0x010000000000a4d9ull;
+constexpr unsigned ExpectedQueries=9,ExpectedMagic=0x41524c3f;
+constexpr char ExpectedDirectory[]="sdmc:/config/amazon-remote-nav15s";
+constexpr char ExpectedStartup[]="/config/amazon-remote-nav15s/startup.bin";
+constexpr char BinaryDirectory[]="sdmc:/atmosphere/contents/010000000000a4d9";
+constexpr char BinaryPath[]="sdmc:/atmosphere/contents/010000000000a4d9/exefs.nsp";
+#elif defined(ARMODULE_NAV15)
 constexpr auto ExpectedId=0x010000000000a4d9ull;
 constexpr unsigned ExpectedQueries=9,ExpectedMagic=0x41524c3f;
 constexpr char ExpectedDirectory[]="sdmc:/config/amazon-remote-nav15";

@@ -2,7 +2,9 @@
 #pragma once
 #include "native_hdls.hpp"
 #include "protocol.hpp"
-#ifdef ARMODULE_NAV15
+#ifdef ARMODULE_NAV15_SYSTEM
+#include "navigation15s_identity.hpp"
+#elif defined(ARMODULE_NAV15)
 #include "navigation15_identity.hpp"
 #elif defined(ARMODULE_NAV14)
 #include "navigation14_identity.hpp"
@@ -20,8 +22,8 @@
 #include "launch_fix_sdk.hpp"
 namespace armodule {
 #ifdef ARMODULE_NAV15
-inline constexpr char NavigationAttemptPath[]="sdmc:/config/amazon-remote-nav15/launch.bin";
-inline constexpr char NavigationAttemptTemp[]="sdmc:/config/amazon-remote-nav15/launch.tmp";
+inline constexpr char NavigationAttemptPath[]=ARMODULE_NAV15_CONFIG "/launch.bin";
+inline constexpr char NavigationAttemptTemp[]=ARMODULE_NAV15_CONFIG "/launch.tmp";
 #elif defined(ARMODULE_NAV14)
 inline constexpr char NavigationAttemptPath[]="sdmc:/config/amazon-remote-nav14/launch.bin";
 inline constexpr char NavigationAttemptTemp[]="sdmc:/config/amazon-remote-nav14/launch.tmp";

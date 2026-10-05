@@ -66,6 +66,8 @@ Result btmuBleGetConnectionState(BtdrvBleConnectionInfo*,u8,u8*);
 struct BtdrvBleAdvertisePacketParameter {u16 company_id{};u8 pattern_data[6]{};};
 Result btmuBleGetPairedDevices(BtdrvBleAdvertisePacketParameter,BtdrvAddress*,u8,u8*);
 Result btmuBlePairDevice(u32,BtdrvBleAdvertisePacketParameter);
+Result btmBlePairDevice(u32,BtdrvBleAdvertisePacketParameter);
+Result btmBleGetPairedAddresses(BtdrvBleAdvertisePacketParameter,BtdrvAddress*,u8,u8*);
 Result btmuGetBleScanResultsForGeneral(BtdrvBleScanResult*,u8,u8*);
 Result btmuGetBleScanResultsForSmartDevice(BtdrvBleScanResult*,u8,u8*);
 Result btmuBleConnect(BtdrvAddress); Result btdevConnectToGattServer(BtdrvAddress); Result btdevDisconnectFromGattServer(u32);

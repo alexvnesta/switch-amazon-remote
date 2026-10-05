@@ -13,6 +13,14 @@ public:
     bool System() const { return system_; }
     Result Open() { if (!system_) return 0; const auto rc=btmInitialize();open_=R_SUCCEEDED(rc);return rc; }
     void Close() { if (open_) btmExit();open_=false; }
+    Result PairDevice(u32 connection,BtdrvBleAdvertisePacketParameter param) {
+        if(!system_ || !open_ || !connection || connection==0xffffffff)return Invalid();
+        return btmBlePairDevice(connection,param);
+    }
+    Result PairedAddresses(BtdrvBleAdvertisePacketParameter param,BtdrvAddress *out,u8 count,u8 *total) {
+        if(!system_ || !open_ || !out || !count || count>10 || !total)return Invalid();
+        return btmBleGetPairedAddresses(param,out,count,total);
+    }
     Result ConfigureMtu(u32 connection,u16 mtu) {
         if (!connection || mtu<24 || mtu>512 || (system_ && !open_)) return Invalid();
         return system_?btmConfigureBleMtu(connection,mtu):btdevConfigureBleMtu(connection,mtu);

@@ -175,7 +175,9 @@ int main(int, char **) {
     if (R_FAILED(rc)) { pscmExit(); return 0; }
 #if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
 #ifdef ARMODULE_NAV12
-#ifdef ARMODULE_NAV15
+#ifdef ARMODULE_NAV15_SYSTEM
+    amazon_remote::LibnxSession remote(Log,true,true,true,true,true,true);
+#elif defined(ARMODULE_NAV15)
     amazon_remote::LibnxSession remote(Log,true,true,true,true,true);
 #else
     amazon_remote::LibnxSession remote(Log,true,true,true,true);
@@ -193,6 +195,9 @@ int main(int, char **) {
 #ifdef ARMODULE_NAV15
     backend.SetLogger(Log,true);
     Log("NAV15: setup90s, Ready30min; explicit Y enrollment once after verified neutral READY; AD-derived profile is experimental; no automatic pair/reconnect");
+#ifdef ARMODULE_NAV15_SYSTEM
+    Log("ENROLLMENT_ROUTE=system BTM cmd41 + paired-address cmd44; fixed route, no user-to-system fallback; no new privileges");
+#endif
 #else
     backend.SetLogger(Log);
 #endif

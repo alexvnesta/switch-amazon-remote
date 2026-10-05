@@ -148,7 +148,9 @@ int main(int, char **) {
         if (!last_draw || Now()-last_draw >= 250 || requested) {
             consoleClear();
 #if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
-#ifdef ARMODULE_NAV15
+#ifdef ARMODULE_NAV15_SYSTEM
+            std::printf("Amazon Remote Navigation15S: system-BTM enrollment test\n\n");
+#elif defined(ARMODULE_NAV15)
             std::printf("Amazon Remote Navigation15: explicit enrollment test\n\n");
 #elif defined(ARMODULE_NAV14)
             std::printf("Amazon Remote Navigation 14 - connection evidence\n\n");

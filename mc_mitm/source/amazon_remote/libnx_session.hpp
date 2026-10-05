@@ -18,7 +18,7 @@ Result ReadOnlyScanCacheCensus(BtdrvAddress target, Logger logger);
 // Single-thread owner. Uses btdev's user path; never consumes btdrv managed events.
 class LibnxSession {
 public:
-    explicit LibnxSession(Logger logger, bool fingerprint_only = false, bool input_diagnostic = false, bool system_gatt = false, bool native_requests = false, bool sustained_input = false);
+    explicit LibnxSession(Logger logger, bool fingerprint_only = false, bool input_diagnostic = false, bool system_gatt = false, bool native_requests = false, bool sustained_input = false, bool system_enrollment = false);
     Result Initialize(BtdrvAddress target);
     Result InitializeLinkOnly(BtdrvAddress target);
     Result InitializeIdentityTest(BtdrvAddress target);
@@ -48,6 +48,7 @@ private:
     void EnrollmentFinish(EnrollmentState state,Result result);
     EnrollmentRecord enrollment_{};
     bool enrollment_consumed_{};
+    const bool system_enrollment_;
     Result LoadCache(std::uint32_t connection);
     Result LoadFingerprintCache(std::uint32_t connection);
     Result ReadInputInventory(const char *label, bool adopt);

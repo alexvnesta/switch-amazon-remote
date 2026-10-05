@@ -2,26 +2,27 @@
 #pragma once
 #include <cstdint>
 #include <type_traits>
+#include "navigation15_namespace.hpp"
 
 namespace armodule {
 inline constexpr std::uint32_t Magic = 0x41524d31;
 #ifdef ARMODULE_NAV15
 inline constexpr std::uint32_t Version = 3;
-inline constexpr char Directory[] = "sdmc:/config/amazon-remote-nav15";
-inline constexpr char CommandPath[] = "sdmc:/config/amazon-remote-nav15/command.bin";
-inline constexpr char StatusPath[] = "sdmc:/config/amazon-remote-nav15/status.bin";
-inline constexpr char CommandTemp[] = "sdmc:/config/amazon-remote-nav15/command.tmp";
-inline constexpr char StatusTemp[] = "sdmc:/config/amazon-remote-nav15/status.tmp";
-inline constexpr char EnablePath[] = "sdmc:/config/amazon-remote-nav15/enable.txt";
-inline constexpr char LogPath[] = "sdmc:/config/amazon-remote-nav15/module.log";
-inline constexpr char HdlsPath[] = "sdmc:/config/amazon-remote-nav15/hdls-backend.bin";
-inline constexpr char HdlsTemp[] = "sdmc:/config/amazon-remote-nav15/hdls-backend.tmp";
-inline constexpr char ControlPath[] = "sdmc:/config/amazon-remote-nav15/control.bin";
-inline constexpr char ControlTemp[] = "sdmc:/config/amazon-remote-nav15/control.tmp";
-inline constexpr char StatusFsPath[]="/config/amazon-remote-nav15/status.bin";
-inline constexpr char EnrollmentIntentPath[]="sdmc:/config/amazon-remote-nav15/enrollment-intent.bin";
-inline constexpr char EnrollmentPath[]="sdmc:/config/amazon-remote-nav15/enrollment.bin";
-inline constexpr char EnrollmentTemp[]="sdmc:/config/amazon-remote-nav15/enrollment.tmp";
+inline constexpr char Directory[] = ARMODULE_NAV15_CONFIG;
+inline constexpr char CommandPath[] = ARMODULE_NAV15_CONFIG "/command.bin";
+inline constexpr char StatusPath[] = ARMODULE_NAV15_CONFIG "/status.bin";
+inline constexpr char CommandTemp[] = ARMODULE_NAV15_CONFIG "/command.tmp";
+inline constexpr char StatusTemp[] = ARMODULE_NAV15_CONFIG "/status.tmp";
+inline constexpr char EnablePath[] = ARMODULE_NAV15_CONFIG "/enable.txt";
+inline constexpr char LogPath[] = ARMODULE_NAV15_CONFIG "/module.log";
+inline constexpr char HdlsPath[] = ARMODULE_NAV15_CONFIG "/hdls-backend.bin";
+inline constexpr char HdlsTemp[] = ARMODULE_NAV15_CONFIG "/hdls-backend.tmp";
+inline constexpr char ControlPath[] = ARMODULE_NAV15_CONFIG "/control.bin";
+inline constexpr char ControlTemp[] = ARMODULE_NAV15_CONFIG "/control.tmp";
+inline constexpr char StatusFsPath[]=ARMODULE_NAV15_CONFIG_FS "/status.bin";
+inline constexpr char EnrollmentIntentPath[]=ARMODULE_NAV15_CONFIG "/enrollment-intent.bin";
+inline constexpr char EnrollmentPath[]=ARMODULE_NAV15_CONFIG "/enrollment.bin";
+inline constexpr char EnrollmentTemp[]=ARMODULE_NAV15_CONFIG "/enrollment.tmp";
 #elif defined(ARMODULE_NAV14)
 inline constexpr std::uint32_t Version = 3;
 inline constexpr char Directory[] = "sdmc:/config/amazon-remote-nav14";
