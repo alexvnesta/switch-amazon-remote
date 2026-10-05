@@ -5,6 +5,7 @@
 #include "hdls_trace.hpp"
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 
 namespace armodule {
 static_assert(HidNpadButton_A == (1ull<<0) && HidNpadButton_B == (1ull<<1));
@@ -13,6 +14,8 @@ static_assert(HidNpadButton_Up == (1ull<<13) && HidNpadButton_Right == (1ull<<14
 static_assert(HidNpadButton_Down == (1ull<<15) && HiddbgNpadButton_Home == (1ull<<18));
 class HdlsBackend {
 public:
+    using Logger=void (*)(const char *);
+    void SetLogger(Logger log) { log_=log; }
     using Allocate=void *(*)(std::size_t,std::size_t);
     using Free=void (*)(void *);
     explicit HdlsBackend(Allocate allocate=std::aligned_alloc,Free release=std::free)
@@ -60,6 +63,29 @@ public:
         if (!trace_.set_calls) trace_.first_set_result=rc;
         ++trace_.set_calls; trace_.last_set_result=rc; return rc;
     }
+    Result CheckOwnedDevice(bool &present) {
+        present=false;
+        // The SDK's IsAttached convenience helper loops over total_entries
+        // without a bound. Validate the read-only snapshot before searching it.
+        HiddbgHdlsStateList snapshot{};
+        static_assert(sizeof(snapshot)<=0x1000);
+        auto rc=hiddbgDumpHdlsStates(session_,&snapshot);
+        if (!rc && (snapshot.total_entries<0 || snapshot.total_entries>16))
+            rc=MAKERESULT(Module_Libnx,LibnxError_BadInput);
+        unsigned matches=0;
+        if (!rc) {
+            for (int i=0;i<snapshot.total_entries;++i)
+                if (snapshot.entries[i].handle.handle==handle_.handle) ++matches;
+            if (!handle_.handle || matches>1) rc=MAKERESULT(Module_Libnx,LibnxError_BadInput);
+            else present=matches==1;
+        }
+        if (log_) {
+            char line[160]{};
+            std::snprintf(line,sizeof line,"HDLS_OWNED_CHECK Result=%08lx owned_present=%u; no foreign handles adopted or modified",
+                static_cast<unsigned long>(rc),present);log_(line);
+        }
+        return rc;
+    }
     Result DetachDevice() { return trace_.detach_result=hiddbgDetachHdlsVirtualDevice(handle_); }
     Result ReleaseSession() {
         const auto rc=trace_.release_result=hiddbgReleaseHdlsWorkBuffer(session_);
@@ -76,6 +102,7 @@ public:
         auto r=trace_; r.instance=instance; r.now_ms=now; r.checksum=HdlsTraceChecksum(r); return r;
     }
 private:
+    Logger log_{};
     Allocate allocate_; Free free_; void *buffer_{};
     bool transfer_attempted_{},release_confirmed_{};
     HdlsTrace trace_{};

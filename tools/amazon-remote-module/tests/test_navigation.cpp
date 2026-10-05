@@ -5,7 +5,14 @@
 #include <filesystem>
 #include <string_view>
 namespace {
-#ifdef ARMODULE_NAV12
+#ifdef ARMODULE_NAV13
+constexpr auto ExpectedId=0x010000000000a4d7ull;
+constexpr unsigned ExpectedQueries=7,ExpectedMagic=0x41524c3d;
+constexpr char ExpectedDirectory[]="sdmc:/config/amazon-remote-nav13";
+constexpr char ExpectedStartup[]="/config/amazon-remote-nav13/startup.bin";
+constexpr char BinaryDirectory[]="sdmc:/atmosphere/contents/010000000000a4d7";
+constexpr char BinaryPath[]="sdmc:/atmosphere/contents/010000000000a4d7/exefs.nsp";
+#elif defined(ARMODULE_NAV12)
 constexpr auto ExpectedId=0x010000000000a4d6ull;
 constexpr unsigned ExpectedQueries=6,ExpectedMagic=0x41524c3c;
 constexpr char ExpectedDirectory[]="sdmc:/config/amazon-remote-nav12";
@@ -65,7 +72,7 @@ u64 armGetSystemTick() { return tick; }
 u64 armTicksToNs(u64 t) { return t*1000000; }
 Result pmdmntInitialize() { return query_init; }
 Result pmdmntGetProcessId(u64 *pid,u64 id) {
-    assert(id==armodule::SafeModuleProgramId || id==armodule::NativeHdlsProgramId || id==armodule::ModuleProgramId || id==0x010000000000a4d3 || id==0x010000000000a4d4 || id==0x010000000000a4d5);
+    assert(id==armodule::SafeModuleProgramId || id==armodule::NativeHdlsProgramId || id==armodule::ModuleProgramId || id==0x010000000000a4d3 || id==0x010000000000a4d4 || id==0x010000000000a4d5 || id==0x010000000000a4d6);
     ++query_calls;*pid=id==active_id?201:query_pid;return id==active_id?0:query_rc;
 }
 void pmdmntExit() { ++query_exits; }
@@ -82,6 +89,7 @@ void sha256ContextGetHash(Sha256Context *,void *out) { std::memcpy(out,sha.data(
 int main() {
     using namespace armodule;
     static_assert(!StartupDiagnosticOnly && ModuleProgramId==ExpectedId);
+    static_assert(NavigationModuleSize>0 && NavigationModuleSize<8000000);
     static_assert(std::string_view(Directory)==ExpectedDirectory);
     static_assert(std::string_view(StartupFsPath)==ExpectedStartup);
     auto prior=Prior();assert(PriorNativePassed(prior));
@@ -114,6 +122,9 @@ int main() {
 #endif
 #ifdef ARMODULE_NAV12
     active_id=0x010000000000a4d5;RequestNavigationLaunch(attempt);assert(!shell_calls && query_exits==1);Reset();
+#endif
+#ifdef ARMODULE_NAV13
+    active_id=0x010000000000a4d6;RequestNavigationLaunch(attempt);assert(!shell_calls && query_exits==1);Reset();
 #endif
     sha[0]^=1;RequestNavigationLaunch(attempt);assert(!shell_calls && query_calls==ExpectedQueries);Reset();
     shell_rc=79;RequestNavigationLaunch(attempt);assert(!launch_calls && !shell_exits);

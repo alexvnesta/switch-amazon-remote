@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 using Result = std::uint32_t;
-inline constexpr unsigned Module_Libnx=345,LibnxError_OutOfMemory=2,LibnxError_AlreadyInitialized=7;
+inline constexpr unsigned Module_Libnx=345,LibnxError_OutOfMemory=2,LibnxError_AlreadyInitialized=7,LibnxError_BadInput=11;
 #define MAKERESULT(module,description) (((module)&0x1ff)|(((description)&0x1fff)<<9))
 #define KERNELRESULT(description) MAKERESULT(1,KernelError_##description)
 inline constexpr unsigned KernelError_InvalidMemoryState=106;
@@ -23,6 +23,11 @@ struct HiddbgHdlsState {
     unsigned battery_level{}, flags{};
     struct { int x{}, y{}; } analog_stick_l{}, analog_stick_r{};
 };
+struct HiddbgHdlsStateList {
+    std::int32_t total_entries{};
+    struct { HiddbgHdlsHandle handle;HiddbgHdlsDeviceInfo device;HiddbgHdlsState state; } entries[16]{};
+};
+Result hiddbgDumpHdlsStates(HiddbgHdlsSessionId,HiddbgHdlsStateList *);
 Result hiddbgInitialize();
 Result hiddbgAttachHdlsWorkBuffer(HiddbgHdlsSessionId *, void *, std::size_t);
 Result hiddbgAttachHdlsVirtualDevice(HiddbgHdlsHandle *, const HiddbgHdlsDeviceInfo *);

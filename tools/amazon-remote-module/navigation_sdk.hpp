@@ -2,7 +2,9 @@
 #pragma once
 #include "native_hdls.hpp"
 #include "protocol.hpp"
-#ifdef ARMODULE_NAV12
+#ifdef ARMODULE_NAV13
+#include "navigation13_identity.hpp"
+#elif defined(ARMODULE_NAV12)
 #include "navigation12_identity.hpp"
 #elif defined(ARMODULE_NAV11)
 #include "navigation11_identity.hpp"
@@ -13,7 +15,10 @@
 #endif
 #include "launch_fix_sdk.hpp"
 namespace armodule {
-#ifdef ARMODULE_NAV12
+#ifdef ARMODULE_NAV13
+inline constexpr char NavigationAttemptPath[]="sdmc:/config/amazon-remote-nav13/launch.bin";
+inline constexpr char NavigationAttemptTemp[]="sdmc:/config/amazon-remote-nav13/launch.tmp";
+#elif defined(ARMODULE_NAV12)
 inline constexpr char NavigationAttemptPath[]="sdmc:/config/amazon-remote-nav12/launch.bin";
 inline constexpr char NavigationAttemptTemp[]="sdmc:/config/amazon-remote-nav12/launch.tmp";
 #elif defined(ARMODULE_NAV11)
@@ -41,7 +46,9 @@ inline bool PriorNativePassed(const NativeResult &r) {
 }
 inline bool VerifyNavigationBinary(std::array<std::uint8_t,32> &hash) {
     if (!NavigationModuleSize) return false;
-#ifdef ARMODULE_NAV12
+#ifdef ARMODULE_NAV13
+    FILE *file=std::fopen("sdmc:/atmosphere/contents/010000000000a4d7/exefs.nsp","rb"); if (!file) return false;
+#elif defined(ARMODULE_NAV12)
     FILE *file=std::fopen("sdmc:/atmosphere/contents/010000000000a4d6/exefs.nsp","rb"); if (!file) return false;
 #elif defined(ARMODULE_NAV11)
     FILE *file=std::fopen("sdmc:/atmosphere/contents/010000000000a4d5/exefs.nsp","rb"); if (!file) return false;
@@ -65,7 +72,7 @@ inline bool VerifyNavigationBinary(std::array<std::uint8_t,32> &hash) {
 // released. Launch starts IDLE: a subsequent physical A and ZL are still needed.
 // Never removes an attempt marker, clears bonds, changes radio state or retries.
 inline const char *RequestNavigationLaunch(NativeAttempt &r) {
-    r={}; r.magic=ModuleProgramId==0x010000000000a4d6?0x41524c3c:ModuleProgramId==0x010000000000a4d5?0x41524c3b:ModuleProgramId==0x010000000000a4d4?0x41524c3a:0x41524c39;
+    r={}; r.magic=ModuleProgramId==0x010000000000a4d7?0x41524c3d:ModuleProgramId==0x010000000000a4d6?0x41524c3c:ModuleProgramId==0x010000000000a4d5?0x41524c3b:ModuleProgramId==0x010000000000a4d4?0x41524c3a:0x41524c39;
     for (auto path:{NavigationAttemptPath,NavigationAttemptTemp,LinkPendingPath})
         if (!NavigationAbsent(path)) return "REFUSED: prior attempt/lock exists. Return to FTPD; no retry.";
     NativeResult prior{};
@@ -77,7 +84,9 @@ inline const char *RequestNavigationLaunch(NativeAttempt &r) {
     if (!now || now>=prior.now_ms) return "REFUSED: fresh reboot not established. Return to FTPD.";
     r.query_init=pmdmntInitialize(); u64 pid{};
     if (!r.query_init) {
-#ifdef ARMODULE_NAV12
+#ifdef ARMODULE_NAV13
+        const std::array<std::uint64_t,7> programs{SafeModuleProgramId,NativeHdlsProgramId,0x010000000000a4d3,0x010000000000a4d4,0x010000000000a4d5,0x010000000000a4d6,ModuleProgramId};
+#elif defined(ARMODULE_NAV12)
         const std::array<std::uint64_t,6> programs{SafeModuleProgramId,NativeHdlsProgramId,0x010000000000a4d3,0x010000000000a4d4,0x010000000000a4d5,ModuleProgramId};
 #elif defined(ARMODULE_NAV11)
         const std::array<std::uint64_t,5> programs{SafeModuleProgramId,NativeHdlsProgramId,0x010000000000a4d3,0x010000000000a4d4,ModuleProgramId};

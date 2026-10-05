@@ -36,6 +36,9 @@ constinit armodule::StartupRecord startup_record{};
 FsFileSystem startup_fs{}; bool startup_fs_open{};
 amazon_remote::RotatingLog log_file;
 bool log_healthy{};
+#ifdef ARMODULE_NAV13
+bool log_stopped{};
+#endif
 static_assert(PscPmState_Awake == 0 && PscPmState_ReadyAwaken == 1 && PscPmState_ReadySleep == 2);
 static_assert(PscPmState_ReadySleepCritical == 3 && PscPmState_ReadyAwakenCritical == 4 && PscPmState_ReadyShutdown == 5);
 std::uint64_t start_ms{};
@@ -49,6 +52,9 @@ void Checkpoint(armodule::StartupStage stage, Result result) {
     if (startup_fs_open) (void)armodule::WriteStartup(startup_fs, startup_record);
 }
 void Log(const char *message) {
+#ifdef ARMODULE_NAV13
+    if (log_stopped) return;
+#endif
     char line[amazon_remote::RotatingLog::LineLimit]{};
     amazon_remote::FormatLogLine(line, sizeof line, start_ms, Now(), message);
     if (!log_file.Write(line)) log_healthy = false;
@@ -167,6 +173,9 @@ int main(int, char **) {
     amazon_remote::LibnxSession remote(Log, true, true);
 #endif
     armodule::HdlsBackend backend;
+#ifdef ARMODULE_NAV13
+    backend.SetLogger(Log);
+#endif
     armodule::OwnedController controller(backend);
     armodule::SessionPolicy policy;
     armodule::InputHoldGuard hold_guard;
@@ -196,6 +205,11 @@ int main(int, char **) {
         // A later successful X/Stop must not erase a recorded failure.
         if (result || pad_result) status.result = result ? result : pad_result;
         policy.Stop();
+#ifdef ARMODULE_NAV13
+        // A stopped one-shot session will never reconnect. Release the text-log
+        // handle AFTER all failure/cleanup events so FTP can capture this boot.
+        log_file.Close();log_stopped=true;
+#endif
     };
     const auto sighting = [&](amazon_remote::SightingWire &wire) {
         if (policy.Get() != armodule::State::Scanning || !serviceIsActive(&mc)) return false;
@@ -289,7 +303,20 @@ int main(int, char **) {
                     if (!hold_guard.Accept(remote.Buttons(), Now())) { Log("Continuous held-input/clock watchdog: stop and neutralize"); stop(Invalid()); }
                     else {
                         const auto before = controller.SuccessfulWrites();
+#ifdef ARMODULE_NAV13
+                        const bool recovered=controller.Recovered();
+                        rc = controller.UpdateMaintained(remote.Buttons(),Now());
+                        if (!recovered && controller.Recovered())
+                            Log("HDLS_RECOVERY: one confirmed-absent owned handle replaced; neutral first; mapped button release required; no Bluetooth reconnect");
+                        if (R_FAILED(rc)) {
+                            char line[192]{};
+                            std::snprintf(line,sizeof line,"HDLS_DELIVERY_FAILED Result=%08lx remote=%08lx mapped=%016llx waiting_release=%u; no ambiguous-error reattach",
+                                static_cast<unsigned long>(rc),static_cast<unsigned long>(remote.Buttons()),
+                                static_cast<unsigned long long>(armodule::MapButtons(remote.Buttons())),controller.WaitingRelease());Log(line);
+                        }
+#else
                         rc = controller.Update(remote.Buttons());
+#endif
                         if (R_FAILED(rc)) stop(rc);
                         else if (controller.SuccessfulWrites() != before) {
                             char line[160]{};

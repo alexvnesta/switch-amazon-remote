@@ -8,6 +8,7 @@
 namespace {
 unsigned fail_step{}, calls{};
 Result memory_query_result{},heap_result{};
+HiddbgHdlsStateList owned_snapshot{};Result snapshot_result{};
 unsigned memory_type=MemType_Heap,memory_permission=Perm_Rw,memory_attribute{},alloc_calls{},free_calls{},query_calls{};
 bool allocation_failure{}; std::size_t region_size=4096;
 void *heap_base=reinterpret_cast<void *>(0x100000);
@@ -59,6 +60,9 @@ Result hiddbgSetHdlsState(HiddbgHdlsHandle handle, const HiddbgHdlsState *state)
 Result hiddbgDetachHdlsVirtualDevice(HiddbgHdlsHandle handle) { assert(handle.handle==29); return Call(5); }
 Result hiddbgReleaseHdlsWorkBuffer(HiddbgHdlsSessionId session) { assert(session.id==17); return Call(6); }
 void hiddbgExit() { Call(7); }
+Result hiddbgDumpHdlsStates(HiddbgHdlsSessionId session,HiddbgHdlsStateList *out) {
+    assert(session.id==17);*out=owned_snapshot;return snapshot_result;
+}
 int main() {
     for (unsigned failure=0; failure<=7; ++failure) {
         Reset(failure);
@@ -119,6 +123,23 @@ int main() {
     Reset(0); void *start{},*end{};
     assert(!armodule::InitializeKernelHeap(start,end) && start==heap_base && static_cast<unsigned char *>(end)-static_cast<unsigned char *>(start)==armodule::KernelHeapSize);
     heap_result=77; assert(armodule::InitializeKernelHeap(start,end)==77 && !start && !end);
+    Reset(0);
+    { armodule::HdlsBackend b(Allocate,Free);armodule::OwnedController c(b);assert(!c.Start());
+      bool present=true;owned_snapshot={};snapshot_result=47;
+      assert(b.CheckOwnedDevice(present)==47 && !present);
+      snapshot_result=0;
+      for (int count:{-1,17,1000000}) {
+          owned_snapshot.total_entries=count;present=true;
+          assert(b.CheckOwnedDevice(present)==MAKERESULT(Module_Libnx,LibnxError_BadInput) && !present);
+      }
+      owned_snapshot={};owned_snapshot.total_entries=16;
+      for (unsigned i=0;i<16;++i) owned_snapshot.entries[i].handle.handle=100+i;
+      assert(!b.CheckOwnedDevice(present) && !present); // no foreign handle adopted
+      owned_snapshot.entries[15].handle.handle=29;
+      assert(!b.CheckOwnedDevice(present) && present);
+      owned_snapshot.entries[0].handle.handle=29;
+      assert(b.CheckOwnedDevice(present)==MAKERESULT(Module_Libnx,LibnxError_BadInput) && !present);
+      assert(!c.Stop()); }
     Reset(0);
     std::puts("PASS HDLS owned writable data/heap guards, neutral replies, every failure stage, cleanup/quarantine, one-shot latch and historical kernel heap setup. NOT hardware proof.");
 }

@@ -38,7 +38,8 @@ private:
 };
 
 // Backend owns exactly one service session, work buffer and virtual handle.
-// Never reads/applies/reassigns the global controller list. Failures are latched:
+// Never applies/reassigns the global controller list. Navigation13 may inspect a
+// bounded read-only snapshot to match ONLY its own handle. Failures are latched:
 // no retry loop, and every acquired stage is released in reverse order.
 template<class Backend> class OwnedController {
 public:
@@ -65,6 +66,41 @@ public:
         if (rc) return Fail(rc);
         last_ = buttons; return 0;
     }
+    // Opt-in for Navigation13 ONLY. No Bluetooth reconnect or adoption of a
+    // foreign pad. One confirmed-absent handle may be replaced in our existing
+    // work session. Query failures and ambiguous Set failures never recover.
+    std::uint32_t Maintain(std::uint64_t now, bool force=false) {
+        if (!device_ || failed_ || !now || (last_check_ && now<last_check_)) return Fail(1);
+        if (!force && last_check_ && now-last_check_<250) return 0;
+        last_check_=now;
+        bool present=false;
+        auto rc=backend_.CheckOwnedDevice(present);
+        if (rc) return Fail(rc);
+        if (present) return 0;
+        // Confirmed gone: never send neutral/detach to the stale handle.
+        device_=false;
+        if (recovered_) return Fail(1);
+        recovered_=true;
+        rc=backend_.AttachDevice();if (rc) return Fail(rc);
+        device_=true;
+        present=false;rc=backend_.CheckOwnedDevice(present);
+        if (rc) return Fail(rc);
+        if (!present) { device_=false;return Fail(1); }
+        rc=Write(0);if (rc) return Fail(rc);
+        last_=0;release_gate_=true;
+        return 0;
+    }
+    std::uint32_t UpdateMaintained(std::uint32_t remote,std::uint64_t now) {
+        const auto buttons=MapButtons(remote);
+        const auto rc=Maintain(now,buttons!=last_ && !release_gate_);
+        if (rc) return rc;
+        // Never replay the press which discovered removal, or a held key on the
+        // new handle. An observed all-mapped-buttons release is required first.
+        if (release_gate_) { if (!buttons) release_gate_=false;return 0; }
+        return Update(remote);
+    }
+    bool Recovered() const { return recovered_; }
+    bool WaitingRelease() const { return release_gate_; }
     std::uint32_t Stop() {
         std::uint32_t first = 0;
         const auto check = [&](std::uint32_t rc) { if (rc && !first) first = rc; };
@@ -89,7 +125,8 @@ private:
     }
     std::uint32_t Fail(std::uint32_t rc) { failed_ = true; Stop(); return rc; }
     Backend &backend_;
-    bool open_{}, session_{}, device_{}, failed_{};
+    bool open_{}, session_{}, device_{}, failed_{},recovered_{},release_gate_{};
+    std::uint64_t last_check_{};
     std::uint64_t last_{}, acknowledged_{}, writes_{};
     std::uint32_t cleanup_error_{};
 };
