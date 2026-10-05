@@ -5,7 +5,14 @@
 #include <filesystem>
 #include <string_view>
 namespace {
-#ifdef ARMODULE_NAV10
+#ifdef ARMODULE_NAV11
+constexpr auto ExpectedId=0x010000000000a4d5ull;
+constexpr unsigned ExpectedQueries=5,ExpectedMagic=0x41524c3b;
+constexpr char ExpectedDirectory[]="sdmc:/config/amazon-remote-nav11";
+constexpr char ExpectedStartup[]="/config/amazon-remote-nav11/startup.bin";
+constexpr char BinaryDirectory[]="sdmc:/atmosphere/contents/010000000000a4d5";
+constexpr char BinaryPath[]="sdmc:/atmosphere/contents/010000000000a4d5/exefs.nsp";
+#elif defined(ARMODULE_NAV10)
 constexpr auto ExpectedId=0x010000000000a4d4ull;
 constexpr unsigned ExpectedQueries=4,ExpectedMagic=0x41524c3a;
 constexpr char ExpectedDirectory[]="sdmc:/config/amazon-remote-nav10";
@@ -51,7 +58,7 @@ u64 armGetSystemTick() { return tick; }
 u64 armTicksToNs(u64 t) { return t*1000000; }
 Result pmdmntInitialize() { return query_init; }
 Result pmdmntGetProcessId(u64 *pid,u64 id) {
-    assert(id==armodule::SafeModuleProgramId || id==armodule::NativeHdlsProgramId || id==armodule::ModuleProgramId || id==0x010000000000a4d3);
+    assert(id==armodule::SafeModuleProgramId || id==armodule::NativeHdlsProgramId || id==armodule::ModuleProgramId || id==0x010000000000a4d3 || id==0x010000000000a4d4);
     ++query_calls;*pid=id==active_id?201:query_pid;return id==active_id?0:query_rc;
 }
 void pmdmntExit() { ++query_exits; }
@@ -95,6 +102,9 @@ int main() {
     for (auto id:{SafeModuleProgramId,NativeHdlsProgramId,std::uint64_t(0x010000000000a4d3),ModuleProgramId}) {
         active_id=id;RequestNavigationLaunch(attempt);assert(!shell_calls && query_exits==1);Reset();
     }
+#ifdef ARMODULE_NAV11
+    active_id=0x010000000000a4d4;RequestNavigationLaunch(attempt);assert(!shell_calls && query_exits==1);Reset();
+#endif
     sha[0]^=1;RequestNavigationLaunch(attempt);assert(!shell_calls && query_calls==ExpectedQueries);Reset();
     shell_rc=79;RequestNavigationLaunch(attempt);assert(!launch_calls && !shell_exits);
     NativeAttempt saved{};assert(ReadExact(NavigationAttemptPath,saved) && saved.magic==ExpectedMagic && saved.checksum==NativeChecksum(saved) && saved.stage==2);

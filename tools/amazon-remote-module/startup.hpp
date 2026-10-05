@@ -6,7 +6,12 @@
 
 namespace armodule {
 // Temporary, supervised revisions, not public releases.
-#ifdef ARMODULE_NAV10
+#ifdef ARMODULE_NAV11
+inline constexpr bool StartupDiagnosticOnly = false;
+inline constexpr std::uint64_t ModuleProgramId = 0x010000000000a4d5;
+inline constexpr char StartupPath[] = "sdmc:/config/amazon-remote-nav11/startup.bin";
+inline constexpr char StartupFsPath[] = "/config/amazon-remote-nav11/startup.bin";
+#elif defined(ARMODULE_NAV10)
 inline constexpr bool StartupDiagnosticOnly = false;
 inline constexpr std::uint64_t ModuleProgramId = 0x010000000000a4d4;
 inline constexpr char StartupPath[] = "sdmc:/config/amazon-remote-nav10/startup.bin";

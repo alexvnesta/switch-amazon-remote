@@ -2,14 +2,19 @@
 #pragma once
 #include "native_hdls.hpp"
 #include "protocol.hpp"
-#ifdef ARMODULE_NAV10
+#ifdef ARMODULE_NAV11
+#include "navigation11_identity.hpp"
+#elif defined(ARMODULE_NAV10)
 #include "navigation10_identity.hpp"
 #else
 #include "navigation_identity.hpp"
 #endif
 #include "launch_fix_sdk.hpp"
 namespace armodule {
-#ifdef ARMODULE_NAV10
+#ifdef ARMODULE_NAV11
+inline constexpr char NavigationAttemptPath[]="sdmc:/config/amazon-remote-nav11/launch.bin";
+inline constexpr char NavigationAttemptTemp[]="sdmc:/config/amazon-remote-nav11/launch.tmp";
+#elif defined(ARMODULE_NAV10)
 inline constexpr char NavigationAttemptPath[]="sdmc:/config/amazon-remote-nav10/launch.bin";
 inline constexpr char NavigationAttemptTemp[]="sdmc:/config/amazon-remote-nav10/launch.tmp";
 #else
@@ -31,7 +36,9 @@ inline bool PriorNativePassed(const NativeResult &r) {
 }
 inline bool VerifyNavigationBinary(std::array<std::uint8_t,32> &hash) {
     if (!NavigationModuleSize) return false;
-#ifdef ARMODULE_NAV10
+#ifdef ARMODULE_NAV11
+    FILE *file=std::fopen("sdmc:/atmosphere/contents/010000000000a4d5/exefs.nsp","rb"); if (!file) return false;
+#elif defined(ARMODULE_NAV10)
     FILE *file=std::fopen("sdmc:/atmosphere/contents/010000000000a4d4/exefs.nsp","rb"); if (!file) return false;
 #else
     FILE *file=std::fopen("sdmc:/atmosphere/contents/010000000000a4d3/exefs.nsp","rb"); if (!file) return false;
@@ -51,7 +58,7 @@ inline bool VerifyNavigationBinary(std::array<std::uint8_t,32> &hash) {
 // released. Launch starts IDLE: a subsequent physical A and ZL are still needed.
 // Never removes an attempt marker, clears bonds, changes radio state or retries.
 inline const char *RequestNavigationLaunch(NativeAttempt &r) {
-    r={}; r.magic=ModuleProgramId==0x010000000000a4d4?0x41524c3a:0x41524c39;
+    r={}; r.magic=ModuleProgramId==0x010000000000a4d5?0x41524c3b:ModuleProgramId==0x010000000000a4d4?0x41524c3a:0x41524c39;
     for (auto path:{NavigationAttemptPath,NavigationAttemptTemp,LinkPendingPath})
         if (!NavigationAbsent(path)) return "REFUSED: prior attempt/lock exists. Return to FTPD; no retry.";
     NativeResult prior{};
@@ -63,7 +70,9 @@ inline const char *RequestNavigationLaunch(NativeAttempt &r) {
     if (!now || now>=prior.now_ms) return "REFUSED: fresh reboot not established. Return to FTPD.";
     r.query_init=pmdmntInitialize(); u64 pid{};
     if (!r.query_init) {
-#ifdef ARMODULE_NAV10
+#ifdef ARMODULE_NAV11
+        const std::array<std::uint64_t,5> programs{SafeModuleProgramId,NativeHdlsProgramId,0x010000000000a4d3,0x010000000000a4d4,ModuleProgramId};
+#elif defined(ARMODULE_NAV10)
         const std::array<std::uint64_t,4> programs{SafeModuleProgramId,NativeHdlsProgramId,0x010000000000a4d3,ModuleProgramId};
 #else
         const std::array<std::uint64_t,3> programs{SafeModuleProgramId,NativeHdlsProgramId,ModuleProgramId};

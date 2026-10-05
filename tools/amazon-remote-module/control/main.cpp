@@ -4,7 +4,7 @@
 #include "../protocol.hpp"
 #include "../io.hpp"
 #include "../startup.hpp"
-#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10)
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
 #include "../navigation_sdk.hpp"
 #endif
 #include <cstdio>
@@ -25,7 +25,7 @@ int main(int, char **) {
     armodule::StartupControlReport diagnostic{}, saved{};
     unsigned report_writes = 0; bool report_saved = false;
     bool released = false; const char *message = "No command sent. Module must be deliberately enabled first.";
-#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10)
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
     armodule::ReleasedLaunchGate launch_gate;
     armodule::NativeAttempt launch{};
     message = "Release all buttons. A once, release ALL buttons for one second to launch IDLE.";
@@ -54,7 +54,7 @@ int main(int, char **) {
             }
             last_query = diagnostic.now_ms;
         }
-#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10)
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
         // Separate namespace plus a live PM query and matching early checkpoint.
         fresh = fresh && !diagnostic.process_query_result && diagnostic.process_id &&
             diagnostic.startup_valid && !diagnostic.startup.result &&
@@ -93,8 +93,10 @@ int main(int, char **) {
         if (requested) released = false; // Require a fresh release before another physical command.
         if (!last_draw || Now()-last_draw >= 250 || requested) {
             consoleClear();
-#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10)
-#ifdef ARMODULE_NAV10
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
+#ifdef ARMODULE_NAV11
+            std::printf("Amazon Remote Navigation 11 - owned first status write\n\n");
+#elif defined(ARMODULE_NAV10)
             std::printf("Amazon Remote Navigation 10 - system BTM / status checksum\n\n");
 #else
             std::printf("Amazon Remote Navigation 9 - supervised test\n\n");
@@ -123,7 +125,7 @@ int main(int, char **) {
             }
             else std::printf("No current module status. No Bluetooth action permitted.\n");
             std::printf("\n%s\n\n", message);
-#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10)
+#if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
             std::printf("One attempt,90s connected limit. No reconnect/autoboot.\nAfter READY: + exits; try D-pad/OK/Back on HOME.\nNo wake or microphone support is claimed.\n");
 #else
             std::printf("Startup diagnosis only. No Bluetooth/pairing commands.\nNo wake or microphone support is claimed.\n");

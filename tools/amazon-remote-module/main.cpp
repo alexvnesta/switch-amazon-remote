@@ -10,7 +10,7 @@
 #include "protocol.hpp"
 #include "config.hpp"
 #include "startup_storage.hpp"
-#ifdef ARMODULE_NAV10
+#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
 #include "status_storage.hpp"
 #endif
 #include <cstdio>
@@ -152,7 +152,7 @@ int main(int, char **) {
     Checkpoint(armodule::StartupStage::PscRegister, rc);
     ResultLog("psc register custom id0xbe (device validation pending)", rc);
     if (R_FAILED(rc)) { pscmExit(); return 0; }
-#ifdef ARMODULE_NAV10
+#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
     amazon_remote::LibnxSession remote(Log,true,true,true);
     armodule::StatusWriter status_writer;std::uint64_t status_error_since{};
 #else
@@ -300,7 +300,7 @@ int main(int, char **) {
             status.acknowledged_buttons = controller.LastAcknowledgedButtons();
             status.successful_writes = controller.SuccessfulWrites();
             status.pad_cleanup_result = controller.CleanupError();
-#ifdef ARMODULE_NAV10
+#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
             status.reserved=armodule::StatusChecksum(status);
             const auto status_rc=status_writer.WriteRecord(startup_fs,status);
             const bool published=R_SUCCEEDED(status_rc);
@@ -314,7 +314,7 @@ int main(int, char **) {
 #endif
             // Checkpoint once on first status or failure, not every500ms forever.
             if (!last_status || !published || startup_record.result) Checkpoint(armodule::StartupStage::Status, published ? 0 : Invalid());
-#ifdef ARMODULE_NAV10
+#if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11)
             if (!published && armodule::StatusFailureExpired(status_error_since,Now(),status_writer.permanent)) { stop(status_rc);break; }
 #else
             if (!published) { stop(Invalid()); break; }
