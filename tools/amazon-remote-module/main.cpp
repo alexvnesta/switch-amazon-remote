@@ -166,7 +166,11 @@ int main(int, char **) {
     if (R_FAILED(rc)) { pscmExit(); return 0; }
 #if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
 #ifdef ARMODULE_NAV12
+#ifdef ARMODULE_NAV15
+    amazon_remote::LibnxSession remote(Log,true,true,true,true,true);
+#else
     amazon_remote::LibnxSession remote(Log,true,true,true,true);
+#endif
     armodule::IdleHealth idle_health;armodule::StatusWriteSchedule status_schedule;bool idle_pass_logged{},status_checkpointed{};
 #else
     amazon_remote::LibnxSession remote(Log,true,true,true);
@@ -177,7 +181,12 @@ int main(int, char **) {
 #endif
     armodule::HdlsBackend backend;
 #ifdef ARMODULE_NAV13
+#ifdef ARMODULE_NAV15
+    backend.SetLogger(Log,true);
+    Log("NAV15 sustained test: setup90s preserved; Ready30min maximum; identical health logs sampled30s, service polls unchanged; no automatic reconnect");
+#else
     backend.SetLogger(Log);
+#endif
 #endif
     armodule::OwnedController controller(backend);
     armodule::SessionPolicy policy;

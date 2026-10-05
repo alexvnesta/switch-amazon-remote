@@ -127,7 +127,9 @@ int main(int, char **) {
         if (!last_draw || Now()-last_draw >= 250 || requested) {
             consoleClear();
 #if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
-#ifdef ARMODULE_NAV14
+#ifdef ARMODULE_NAV15
+            std::printf("Amazon Remote Navigation15: sustained background test\n\n");
+#elif defined(ARMODULE_NAV14)
             std::printf("Amazon Remote Navigation 14 - connection evidence\n\n");
 #elif defined(ARMODULE_NAV13)
             std::printf("Amazon Remote Navigation 13 - owned controller lifetime\n\n");
@@ -170,7 +172,11 @@ int main(int, char **) {
             else std::printf("No current module status. No Bluetooth action permitted.\n");
             std::printf("\n%s\n\n", message);
 #if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
+#ifdef ARMODULE_NAV15
+            std::printf("One attempt: setup90s, READY30min maximum. No reconnect/autoboot.\nAfter READY: + exits; test HOME navigation, wait3min, test again.\nOpen this SAME control app and press X to stop before FTP logs.\nNo wake or microphone support is claimed.\n");
+#else
             std::printf("One attempt,90s connected limit. No reconnect/autoboot.\nAfter READY: + exits; try D-pad/OK/Back on HOME.\nNo wake or microphone support is claimed.\n");
+#endif
 #else
             std::printf("Startup diagnosis only. No Bluetooth/pairing commands.\nNo wake or microphone support is claimed.\n");
 #endif

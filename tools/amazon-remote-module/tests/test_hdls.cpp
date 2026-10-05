@@ -5,7 +5,11 @@
 #include <vector>
 #include <cstdio>
 #include <algorithm>
+#include <string>
 namespace {
+u64 tick{};
+std::vector<std::string> health_logs;
+void HealthLog(const char *line) { health_logs.emplace_back(line); }
 unsigned fail_step{}, calls{};
 Result memory_query_result{},heap_result{};
 HiddbgHdlsStateList owned_snapshot{};Result snapshot_result{};
@@ -35,6 +39,8 @@ void Free(void *p) {
     live.erase(it); ++free_calls; std::free(p);
 }
 }
+u64 armGetSystemTick() { return tick; }
+u64 armTicksToNs(u64 value) { return value*1000000; }
 Result svcSetHeapSize(void **out,u64 size) { assert(size==armodule::KernelHeapSize); *out=heap_base; return heap_result; }
 Result svcQueryMemory(MemoryInfo *m,u32 *page,u64 addr) {
     ++query_calls; assert(!live.empty() && addr==reinterpret_cast<std::uintptr_t>(live.back()));
@@ -141,5 +147,16 @@ int main() {
       assert(b.CheckOwnedDevice(present)==MAKERESULT(Module_Libnx,LibnxError_BadInput) && !present);
       assert(!c.Stop()); }
     Reset(0);
-    std::puts("PASS HDLS owned writable data/heap guards, neutral replies, every failure stage, cleanup/quarantine, one-shot latch and historical kernel heap setup. NOT hardware proof.");
+    { armodule::HdlsBackend b(Allocate,Free);armodule::OwnedController c(b);b.SetLogger(HealthLog,true);
+      assert(!c.Start());owned_snapshot={};owned_snapshot.total_entries=1;owned_snapshot.entries[0].handle.handle=29;snapshot_result=0;
+      bool present=false;tick=0;health_logs.clear();
+      for (;tick<=1800000;tick+=250) assert(!b.CheckOwnedDevice(present) && present);
+      assert(health_logs.size()==61);
+      snapshot_result=47;assert(b.CheckOwnedDevice(present)==47 && !present && health_logs.size()==62);
+      snapshot_result=0;owned_snapshot.total_entries=0;
+      assert(!b.CheckOwnedDevice(present) && !present && health_logs.size()==63);
+      assert(!b.CheckOwnedDevice(present) && !present && health_logs.size()==64);
+      assert(!c.Stop()); }
+    Reset(0);
+    std::puts("PASS HDLS memory/cleanup guards and actual backend quiet-health logging: all7201 ownership queries retained; absent/error never suppressed. NOT hardware proof.");
 }

@@ -1,5 +1,12 @@
 # Amazon remote background module: 0.2.0-alpha.2 candidate
 
+This page records the original alpha.2 release design, not the current device
+evidence. Later supervised Navigation14 delivered HOME navigation once. See
+[compatibility evidence](COMPATIBILITY.md), the [sustained Navigation15
+candidate](NAVIGATION15.md) and the [plugin architecture](PLUGIN_ARCHITECTURE.md)
+for the current development boundary. Existing alpha.2 assets were not replaced
+or reclassified as hardware-tested by that later diagnostic success.
+
 This is a local-built, **inactive, device-untested candidate**, not an installed
 remote driver. It isolates the device-proven probe0.1.10 transport from the new
 background/controller layer. No private MissionControl BLE source is used.

@@ -110,6 +110,32 @@ void GoodFlow() {
     remote.Close(); assert(!remote.Buttons() && f.deregisters==2 && !f.disconnects);
     assert(std::filesystem::exists("sdmc:/config/amazon-remote/link-test-pending.txt"));
 }
+void SustainedFlow(unsigned variant) {
+    Sandbox sandbox;f=FakeState{};f.system=true;f.native_requests=true;
+    if (variant==1) f.scenario=PreMetadataDelay;
+    if (variant==2) f.scenario=DriverBindingDelay;
+    LibnxSession remote(Log,true,true,true,true,true);Start(remote);
+    if (variant==1 || variant==2) {
+        assert(Advance(remote) && !remote.Ready() && !f.registers && !f.writes);
+        remote.Close();return;
+    }
+    assert(!Advance(remote) && remote.Ready());const auto ready=f.now;
+    f.logs.clear();
+    unsigned polls=0;
+    for (;f.now<ready+1800000-20;++polls) {
+        f.now+=20;assert(!remote.Poll(f.now));
+    }
+    unsigned health_logs=0;
+    for (const auto &line:f.logs) if (line.starts_with("API=btmuBleGetConnectionState(link-only)")) ++health_logs;
+    assert(polls>89000 && health_logs<=61 && health_logs>=59);
+    assert(f.connects==1 && f.security_reads==1 && f.writes==2);
+    const u8 keyboard[]{0x52,0,0};
+    Queue(4,0x1812,0x2a4d,0,keyboard,sizeof keyboard);
+    assert(!remote.Poll(f.now) && remote.Buttons()==Up);
+    f.now=ready+1800000;assert(remote.Poll(f.now));
+    assert(Logged("INPUT_STOP_BUDGET"));
+    remote.Close();assert(f.deregisters==2 && !f.disconnects && !remote.Buttons());
+}
 void SystemFlow(unsigned variant) {
     Sandbox sandbox;f=FakeState{};f.system=true;
     if (variant==1) f.system_open_result=Invalid();
@@ -438,6 +464,7 @@ Result FakeServiceDispatchInput(Service *s,u32 cmd,const void *input,std::size_t
 }
 int main() {
     GoodFlow(); FingerprintUnchanged();
+    for(unsigned variant=0;variant<3;++variant)SustainedFlow(variant);
     for (unsigned variant=0;variant<6;++variant) SystemFlow(variant);
     for(unsigned command:{90u,91u,93u,94u})NativeRequestFailure(command);
     NativeWhitelist();

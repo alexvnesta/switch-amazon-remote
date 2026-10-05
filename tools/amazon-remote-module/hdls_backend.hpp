@@ -3,6 +3,7 @@
 #include <switch.h>
 #include "controller.hpp"
 #include "hdls_trace.hpp"
+#include "../../mc_mitm/source/amazon_remote/health_log_gate.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -15,7 +16,7 @@ static_assert(HidNpadButton_Down == (1ull<<15) && HiddbgNpadButton_Home == (1ull
 class HdlsBackend {
 public:
     using Logger=void (*)(const char *);
-    void SetLogger(Logger log) { log_=log; }
+    void SetLogger(Logger log,bool quiet_health=false) { log_=log;quiet_health_=quiet_health; }
     using Allocate=void *(*)(std::size_t,std::size_t);
     using Free=void (*)(void *);
     explicit HdlsBackend(Allocate allocate=std::aligned_alloc,Free release=std::free)
@@ -25,6 +26,7 @@ public:
     Result Open() {
         if (buffer_ || (trace_.open_result==0 && !trace_.closed)) return MAKERESULT(Module_Libnx,LibnxError_AlreadyInitialized);
         trace_={}; transfer_attempted_=release_confirmed_=false; session_={};handle_={};
+        health_log_gate_.Reset();
         return trace_.open_result=hiddbgInitialize();
     }
     Result AttachSession() {
@@ -48,6 +50,7 @@ public:
         return trace_.attach_session_result=hiddbgAttachHdlsWorkBuffer(&session_,buffer_,0x1000);
     }
     Result AttachDevice() {
+        health_log_gate_.Reset();
         HiddbgHdlsDeviceInfo info{};
         // Matches the public sys-con HDLS Pro-controller convention. This is a
         // virtual pad, not a claim that the remote is a native Switch device.
@@ -79,7 +82,7 @@ public:
             if (!handle_.handle || matches>1) rc=MAKERESULT(Module_Libnx,LibnxError_BadInput);
             else present=matches==1;
         }
-        if (log_) {
+        if (log_ && (!quiet_health_ || rc || !present || health_log_gate_.Due(armTicksToNs(armGetSystemTick())/1000000,1))) {
             char line[160]{};
             std::snprintf(line,sizeof line,"HDLS_OWNED_CHECK Result=%08lx owned_present=%u; no foreign handles adopted or modified",
                 static_cast<unsigned long>(rc),present);log_(line);
@@ -103,6 +106,8 @@ public:
     }
 private:
     Logger log_{};
+    bool quiet_health_{};
+    amazon_remote::HealthLogGate health_log_gate_;
     Allocate allocate_; Free free_; void *buffer_{};
     bool transfer_attempted_{},release_confirmed_{};
     HdlsTrace trace_{};

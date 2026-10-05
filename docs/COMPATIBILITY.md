@@ -21,8 +21,25 @@ not a working microphone. Counts describe this test, not a completeness claim.
 
 A matched NoMitm-requested GATT read succeeded, but neither generic pairing
 hints nor successful IPC proves encryption or a durable bond. Background ARUID0
-access, HDLS system navigation, actual sleep/resume, radio ownership and remote
+access and HDLS system navigation were subsequently reached in Navigation14 as
+described below. Durable bonding, actual sleep/resume, radio ownership and remote
 wake remain separate hardware validation gates.
+
+## Background Navigation14 device evidence
+
+One manually launched Navigation14 session on the same hardware/firmware reached
+two validated input subscriptions and an owned HDLS pad. The operator reported
+successful HOME navigation. Device records show86 successful Set replies,
+including initial/final neutral and42 mapped neutral releases. Changed inputs
+included all four directions, Select/A, Back/B, Home/HOME and Menu/+.
+
+The fixed90s connected guard stopped the session, not a crash. Final neutral,
+detach and work-buffer release all returned success, with the owned page freed.
+Every observed owned-pad presence query succeeded and found the handle. Therefore
+the confirmed-absent replacement branch was not exercised by this success.
+This is one successful trial; earlier connection timeouts are not causally solved.
+Sustained use, durable pairing, reconnect, native-menu enrollment, other models
+and sleep/wake remain unverified. The full private device logs are not published.
 
 ## Public-SDK layout observation
 

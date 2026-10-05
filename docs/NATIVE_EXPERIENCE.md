@@ -6,6 +6,14 @@ recognize the configured remote, reconnect reliably and present controller input
 throughout Horizon. A small settings tool can change mappings or disable support;
 opening it must not become a prerequisite for everyday remote use.
 
+The desired enrollment experience is also the native Controllers -> Change
+Grip/Order menu, as in public MissionControl. Our manual A/ZL flow is temporary
+and does not already provide that integration. See the [plugin architecture](PLUGIN_ARCHITECTURE.md).
+
+Navigation14 now has one device-confirmed HOME-navigation session. The next
+candidate extends Ready lifetime to30min without implementing automatic retry.
+Long-term input, durable bond/reconnect and native-menu enrollment remain gates.
+
 The current probe/control NRO and short session limits are development tools.
 They are not the finished user experience. No production/autostart mode is
 provided merely by renaming those tools or removing their safety bounds.

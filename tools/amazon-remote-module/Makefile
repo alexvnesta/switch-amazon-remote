@@ -174,6 +174,22 @@ build/nav14-exefs/main.npdm: module-nav14.json
 	$(DEVKITPRO)/tools/bin/npdmtool $< $@
 build/nav14-exefs.nsp: build/nav14-exefs/main build/nav14-exefs/main.npdm
 	$(DEVKITPRO)/tools/bin/build_pfs0 build/nav14-exefs $@
+build/nav15-module.elf: main.cpp $(TRANSPORT) $(HEADERS) Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) -DARMODULE_NAV15 -DARMODULE_NAV14 -DARMODULE_NAV13 -DARMODULE_NAV12 $(LDFLAGS) -Wl,-Map,build/nav15-module.map main.cpp $(TRANSPORT) $(LIBS) -o $@
+build/nav15-exefs/main: build/nav15-module.elf
+	mkdir -p build/nav15-exefs
+	$(DEVKITPRO)/tools/bin/elf2nso $< $@
+build/nav15-exefs/main.npdm: module-nav15.json
+	mkdir -p build/nav15-exefs
+	$(DEVKITPRO)/tools/bin/npdmtool $< $@
+build/nav15-exefs.nsp: build/nav15-exefs/main build/nav15-exefs/main.npdm
+	$(DEVKITPRO)/tools/bin/build_pfs0 build/nav15-exefs $@
+build/navigation15-control.elf: control/main.cpp $(HEADERS) Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) -DARMODULE_NAV15 -DARMODULE_NAV14 -DARMODULE_NAV13 -DARMODULE_NAV12 $(LDFLAGS) control/main.cpp $(LIBS) -o $@
+build/navigation15-control.nacp: Makefile | build/exefs
+	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Navigation 15" "switch-amazon-remote contributors" "0.2.0-a2-nav15" $@
+build/amazon-remote-navigation15.nro: build/navigation15-control.elf build/navigation15-control.nacp
+	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/navigation15-control.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
 build/navigation14-control.elf: control/main.cpp $(HEADERS) Makefile | build/exefs
 	$(CXX) $(CXXFLAGS) -DARMODULE_NAV14 -DARMODULE_NAV13 -DARMODULE_NAV12 $(LDFLAGS) control/main.cpp $(LIBS) -o $@
 build/navigation14-control.nacp: Makefile | build/exefs
@@ -222,5 +238,7 @@ host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp test
 	./build/test_navigation13
 	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -DARMODULE_NAV14 -DARMODULE_NAV13 -DARMODULE_NAV12 -Itests/fake_sdk tests/test_navigation.cpp -o build/test_navigation14
 	./build/test_navigation14
+	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -DARMODULE_NAV15 -DARMODULE_NAV14 -DARMODULE_NAV13 -DARMODULE_NAV12 -Itests/fake_sdk tests/test_navigation.cpp -o build/test_navigation15
+	./build/test_navigation15
 HOST_CXX ?= c++
 .PHONY: all host-test

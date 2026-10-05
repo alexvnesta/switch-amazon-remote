@@ -4,8 +4,9 @@ Open-source work toward using Amazon Fire TV remotes with a homebrew-enabled
 Nintendo Switch. **Early experimental developer project—not a finished driver.**
 
 The K7Q3M7 remote has delivered real, decoded BLE button presses and releases in
-our foreground diagnostic probe. We are developing a separate background
-sysmodule that can translate them into a virtual Switch controller.
+our foreground diagnostic probe. A later manually launched Navigation14
+background sysmodule also delivered device-confirmed HOME navigation. This is
+one successful session, not yet an everyday pairing/reconnect driver.
 
 ## Compatibility today
 
@@ -14,8 +15,10 @@ sysmodule that can translate them into a virtual Switch controller.
 | K7Q3M7 descriptor and device fingerprint | Verified on one physical remote |
 | BLE keyboard/consumer notifications | Verified in foreground probe |
 | Twelve named buttons, press and release | Verified; 109 reports, 34 balanced press/release edges |
-| Background sysmodule | Builds; host-tested; **not yet device-tested** |
-| HOME/menu navigation through virtual controller | Implemented candidate; **not yet device-tested** |
+| Background sysmodule | Navigation14 manually launched and delivered input on one console |
+| HOME/menu navigation through virtual controller | Navigation14 verified D-pad, Select, Back, Home and Menu in one session |
+| Sustained background use beyond90s | Navigation15 candidate built for30min Ready; device test pending |
+| Pairing through native Controllers menu | Design goal; not implemented |
 | Persistent bonding and automatic reconnect | Not established; no automatic retry |
 | Actual sleep/resume or waking the Switch remotely | **Not supported/verified** |
 | Microphone/voice audio | **Not supported**; Voice button event only |
@@ -47,6 +50,10 @@ one-time setup and reliable target-only reconnection—not an app kept open.
 Alpha.2 adds a Bluetooth-free neutral-controller preflight and output/cleanup
 telemetry. These are test tools, not finished controller support. See the
 [native-experience plan](docs/NATIVE_EXPERIENCE.md) and its hardware proof gates.
+The [plugin architecture](docs/PLUGIN_ARCHITECTURE.md) separates sustained input,
+bond/ownership evidence, reconnect, native-menu enrollment and boot activation.
+The [Navigation15 test](docs/NAVIGATION15.md) extends only the Ready lifetime;
+it does not implement the remaining production features.
 
 ## Build and test
 

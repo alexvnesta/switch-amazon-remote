@@ -6,6 +6,8 @@
 #include "target_sighting.hpp"
 #include "managed_gatt.hpp"
 #include "native_gatt_requests.hpp"
+#include "session_budget.hpp"
+#include "health_log_gate.hpp"
 
 namespace amazon_remote {
 using Logger = void (*)(const char *message);
@@ -15,7 +17,7 @@ Result ReadOnlyScanCacheCensus(BtdrvAddress target, Logger logger);
 // Single-thread owner. Uses btdev's user path; never consumes btdrv managed events.
 class LibnxSession {
 public:
-    explicit LibnxSession(Logger logger, bool fingerprint_only = false, bool input_diagnostic = false, bool system_gatt = false, bool native_requests = false);
+    explicit LibnxSession(Logger logger, bool fingerprint_only = false, bool input_diagnostic = false, bool system_gatt = false, bool native_requests = false, bool sustained_input = false);
     Result Initialize(BtdrvAddress target);
     Result InitializeLinkOnly(BtdrvAddress target);
     Result InitializeIdentityTest(BtdrvAddress target);
@@ -69,6 +71,8 @@ private:
     bool link_only_{}, link_attempted_{};
     bool identity_test_{}, btdev_initialized_{}, fingerprint_logged_{};
     const bool input_diagnostic_;
+    SessionBudget input_budget_;
+    HealthLogGate connection_log_gate_;
     bool security_read_logged_{}, inputs_loaded_{}, input_ready_logged_{};
     std::uint64_t linked_ms_{}, last_identity_poll_ms_{};
     std::uint64_t capture_deadline_ms_{};

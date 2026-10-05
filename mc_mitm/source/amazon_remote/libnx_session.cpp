@@ -95,11 +95,12 @@ Result ReadOnlyScanCacheCensus(BtdrvAddress target, Logger logger) {
     if (logger) logger("Read-only cache census finished; no scan was started/stopped, no cache candidate adopted. Empty user buckets do not prove no over-air target.");
     return first_error;
 }
-LibnxSession::LibnxSession(Logger logger, bool fingerprint_only, bool input_diagnostic, bool system_gatt, bool native_requests)
+LibnxSession::LibnxSession(Logger logger, bool fingerprint_only, bool input_diagnostic, bool system_gatt, bool native_requests, bool sustained_input)
     : client_(K7q3m7Descriptor, sizeof K7q3m7Descriptor, fingerprint_only), logger_(logger),
       gatt_(system_gatt && fingerprint_only && input_diagnostic),
       native_requests_(native_requests && system_gatt && fingerprint_only && input_diagnostic),
-      identity_test_(fingerprint_only), input_diagnostic_(fingerprint_only && input_diagnostic) {}
+      identity_test_(fingerprint_only), input_diagnostic_(fingerprint_only && input_diagnostic),
+      input_budget_(sustained_input && native_requests_) {}
 void LibnxSession::Log(const char *format, ...) {
     if (!logger_) return;
     char message[256]; va_list args; va_start(args, format); std::vsnprintf(message, sizeof message, format, args); va_end(args); logger_(message);
@@ -475,7 +476,7 @@ Result LibnxSession::ReadInputInventory(const char *label, bool adopt) {
     const auto binding = [&]() -> Result {
         const auto result = CheckCurrentTarget();
         if (R_FAILED(result)) return result;
-        return armTicksToNs(armGetSystemTick()) / 1000000-linked_ms_ < 90000 ? 0 : Invalid();
+        return !input_budget_.Expired(linked_ms_,armTicksToNs(armGetSystemTick()) / 1000000) ? 0 : Invalid();
     };
     auto rc = binding(); if (R_FAILED(rc)) return rc;
     std::array<BtmGattCharacteristic,100> characteristics{}; u8 count = 0;
@@ -611,7 +612,7 @@ Result LibnxSession::Execute(const Request &r) {
     if (identity_test_) {
         const auto rc = CheckCurrentTarget();
         const auto current = armTicksToNs(armGetSystemTick()) / 1000000;
-        if (R_FAILED(rc) || !client_.Tick(current) || (input_diagnostic_ && current-linked_ms_ >= 90000)) return R_FAILED(rc) ? rc : Invalid();
+        if (R_FAILED(rc) || !client_.Tick(current) || (input_diagnostic_ && input_budget_.Expired(linked_ms_,current))) return R_FAILED(rc) ? rc : Invalid();
     }
     if (native_requests_) {
         Result rc=Invalid();const char *api="invalid";
@@ -641,7 +642,7 @@ Result LibnxSession::OnOperation() {
     if (identity_test_) {
         if ((op.type & 4) && (!input_diagnostic_ || !Ready())) return 0;
         rc = CheckCurrentTarget(); if (R_FAILED(rc)) return rc;
-        if (input_diagnostic_ && armTicksToNs(armGetSystemTick()) / 1000000-linked_ms_ >= 90000) return Invalid();
+        if (input_diagnostic_ && input_budget_.Expired(linked_ms_,armTicksToNs(armGetSystemTick()) / 1000000)) return Invalid();
     }
     Log("user GATT event conn=%u result=%u flags=%02x service=%04x char=%04x desc=%04x size=%u", op.conn_id, op.result, op.type,
         ShortUuid(op.serv_uuid), ShortUuid(op.char_uuid), ShortUuid(op.desc_uuid), op.size);
@@ -692,7 +693,7 @@ Result LibnxSession::OnOperation() {
     }
     if (identity_test_) {
         const auto current = armTicksToNs(armGetSystemTick()) / 1000000;
-        if (!client_.Tick(current) || (input_diagnostic_ && current-linked_ms_ >= 90000)) return Invalid();
+        if (!client_.Tick(current) || (input_diagnostic_ && input_budget_.Expired(linked_ms_,current))) return Invalid();
     }
     pending_operation_ = false;
     if(client_.Complete(request_, op.result == 0, op.data, op.size)) return 0;
@@ -705,6 +706,7 @@ Result LibnxSession::OnOperation() {
 void LibnxSession::ResetInput() {
     if (decoder_.Buttons()) { char delta[240]{}; FormatButtons(delta, sizeof delta, decoder_.Buttons(), 0); Log("reset buttons %s", delta); }
     decoder_.Disconnect(); client_.Disconnect(); pending_operation_ = false; cache_loaded_ = mtu_requested_ = discovery_signalled_ = false;
+    input_budget_.Reset();connection_log_gate_.Reset();input_ready_logged_=false;
 }
 Result LibnxSession::Poll(std::uint64_t now) {
     if (!initialized_) return Invalid();
@@ -796,7 +798,8 @@ Result LibnxSession::PollLinkOnly(std::uint64_t now) {
         last_connection_poll_ms_ = now;
         std::array<BtdrvBleConnectionInfo,16> connections{}; u8 count = 0;
         const auto rc = btmuBleGetConnectionState(connections.data(), connections.size(), &count);
-        Log("API=btmuBleGetConnectionState(link-only) Result=%08lx count=%u", static_cast<unsigned long>(rc), count);
+        if (!input_budget_.Sustained() || R_FAILED(rc) || connection_log_gate_.Due(now,count))
+            Log("API=btmuBleGetConnectionState(link-only) Result=%08lx count=%u", static_cast<unsigned long>(rc), count);
         if (R_FAILED(rc)) return rc;
         if (count >= connections.size()) return Invalid();
         bool found = false;
@@ -836,8 +839,9 @@ Result LibnxSession::CheckCurrentTarget() {
 }
 Result LibnxSession::PollIdentity(std::uint64_t now) {
     if (!client_.Tick(now)) return Invalid(); // Expire before consuming completion.
-    if (input_diagnostic_ && now-linked_ms_ >= 90000) {
-        Log("INPUT_DIAGNOSTIC fixed90s connected-session limit reached; no reconnect or automatic security retry");
+    if (input_diagnostic_ && input_budget_.Expired(linked_ms_,now)) {
+        Log(input_budget_.Sustained() ? "INPUT_STOP_BUDGET: setup90s or Ready30min budget expired/clock regressed; no reconnect or security retry" :
+            "INPUT_DIAGNOSTIC fixed90s connected-session limit reached; no reconnect or automatic security retry");
         return Invalid();
     }
     if (input_diagnostic_ && pairing_event_open_) {
@@ -866,6 +870,7 @@ Result LibnxSession::PollIdentity(std::uint64_t now) {
         inputs_loaded_ = true;
     }
     if (Ready() && !input_ready_logged_) {
+        if (!input_budget_.AdmitReady(linked_ms_,armTicksToNs(armGetSystemTick()) / 1000000)) return Invalid();
         input_ready_logged_ = true;
         Log("INPUT_SUBSCRIPTIONS_READY: only report IDs1/2 selected via ReportReference and two standard CCC0100 writes; press remote buttons individually. Logging only: no virtual-controller output, pairing/encryption unverified.");
     }
@@ -922,6 +927,9 @@ Result LibnxSession::PollIdentity(std::uint64_t now) {
             } else pending_operation_ = true;
         }
     }
+    // Admit immediately after the final successful CCC completion, before the
+    // caller attaches a pad. Late completions cannot extend expired setup.
+    if (Ready() && !input_budget_.AdmitReady(linked_ms_,armTicksToNs(armGetSystemTick()) / 1000000)) return Invalid();
     return 0;
 }
 void LibnxSession::Close() {
