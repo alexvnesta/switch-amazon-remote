@@ -12,10 +12,30 @@ ssize_t WrongWrite(int fd,const void *data,size_t length) {
     auto r=*static_cast<const EnrollmentRecord *>(data);++r.connection;return ::write(fd,&r,length);
 }
 int SyncError(int) {return -1;}
+ssize_t WrongContextWrite(int fd,const void *data,size_t length) {
+    auto r=*static_cast<const EnrollmentContextRecord *>(data);++r.expected_handle;return ::write(fd,&r,length);
+}
 }
 int main() {
     char directory[]="/tmp/amazon-enrollment-test-XXXXXX";assert(::mkdtemp(directory));
     const auto path=std::string(directory)+"/intent.bin";
+    EnrollmentContextRecord context{};context.instance=42;context.expected_handle=4;
+    context.snapshot.begin_ms=1000;context.snapshot.end_ms=1001;
+    context.snapshot.checksum=araudit::Checksum(context.snapshot);context.checksum=EnrollmentContextChecksum(context);
+    assert(ValidEnrollmentContext(context));
+    assert(armodule::PersistEnrollmentContext(path.c_str(),context));
+    assert(!armodule::PersistEnrollmentContext(path.c_str(),context));
+    assert(!::unlink(path.c_str()));
+    for(unsigned variant=0;variant<3;++variant) {
+        assert(!armodule::PersistEnrollmentContext(path.c_str(),context,
+            variant==0?ShortWrite:variant==1?WrongContextWrite: ::write,variant==2?SyncError: ::fsync));
+        assert(!armodule::PersistEnrollmentContext(path.c_str(),context));assert(!::unlink(path.c_str()));
+    }
+    for(std::size_t offset=0;offset<sizeof context;++offset) {
+        auto corrupt=context;reinterpret_cast<unsigned char *>(&corrupt)[offset]^=1;
+        assert(!ValidEnrollmentContext(corrupt));
+    }
+    std::cout<<"PASS context persistence: exclusive checked168-byte snapshot, no-overwrite, short/corrupt/unsynced write preservation and every-byte checksum corruption. NOT hardware proof.\n";
     EnrollmentRecord r{};r.state=unsigned(EnrollmentState::Prepared);r.connection=4;r.instance=42;
     r.requested_ms=1000;r.before_result=0;r.checksum=EnrollmentChecksum(r);
     assert(ValidEnrollment(r));

@@ -6,6 +6,9 @@
 #include "../startup.hpp"
 #ifdef ARMODULE_NAV15
 #include "../../../mc_mitm/source/amazon_remote/enrollment.hpp"
+#ifdef ARMODULE_NAV16
+#include "../../../mc_mitm/source/amazon_remote/enrollment_context.hpp"
+#endif
 #endif
 #if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
 #include "../navigation_sdk.hpp"
@@ -137,7 +140,11 @@ int main(int, char **) {
 #ifdef ARMODULE_NAV15
                         if(kind==armodule::CommandKind::Enroll) {
                             enrollment_sent=true;
+#ifdef ARMODULE_NAV16
+                            message="One getter-only context command sent. NO pairing request; check saved record.";
+#else
                             message="One explicit enrollment command sent. Check record; acceptance is NOT persisted-bond proof.";
+#endif
                         }
 #endif
                     } else message = "Command publication failed. Existing temp file is preserved.";
@@ -148,7 +155,9 @@ int main(int, char **) {
         if (!last_draw || Now()-last_draw >= 250 || requested) {
             consoleClear();
 #if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
-#ifdef ARMODULE_NAV15_SYSTEM
+#ifdef ARMODULE_NAV16
+            std::printf("Amazon Remote Navigation16: SAME_SESSION getter-only context\n\n");
+#elif defined(ARMODULE_NAV15_SYSTEM)
             std::printf("Amazon Remote Navigation15S: system-BTM enrollment test\n\n");
 #elif defined(ARMODULE_NAV15)
             std::printf("Amazon Remote Navigation15: explicit enrollment test\n\n");
@@ -192,6 +201,18 @@ int main(int, char **) {
                     checks[status.controller_check], static_cast<unsigned long>(status.pad_cleanup_result),
                     static_cast<unsigned long long>(status.acknowledged_buttons), static_cast<unsigned long long>(status.successful_writes));
 #ifdef ARMODULE_NAV15
+#ifdef ARMODULE_NAV16
+                amazon_remote::EnrollmentContextRecord context{};
+                if(armodule::ReadExact(armodule::EnrollmentContextPath,context) &&
+                   amazon_remote::ValidEnrollmentContext(context) && context.instance==status.instance) {
+                    const auto &s=context.snapshot;
+                    std::printf("Context SAVED: user=%u/%u handle=%u system=%u/%u handle=%u\nUser_Result=%08lx System_Result=%08lx Pairing_flag_Result=%08lx flag=%u\nNO enrollment request sent. This is not bond/ownership proof.\n",
+                        s.user_connections.list.count,s.user_connections.list.matches,s.user_connections.target_handle,
+                        s.system_connections.list.count,s.system_connections.list.matches,s.system_connections.target_handle,
+                        static_cast<unsigned long>(s.user_connections.list.result),static_cast<unsigned long>(s.system_connections.list.result),
+                        static_cast<unsigned long>(s.pairing_query),s.pairing_started);
+                } else std::printf("No getter-only context saved for THIS module instance.\n");
+#else
                 amazon_remote::EnrollmentRecord enrollment{};
                 if(armodule::ReadExact(armodule::EnrollmentPath,enrollment) &&
                    amazon_remote::ValidEnrollment(enrollment) && enrollment.instance==status.instance) {
@@ -202,12 +223,17 @@ int main(int, char **) {
                         static_cast<unsigned long>(enrollment.after_result),enrollment.after_count,enrollment.after_matches);
                 } else std::printf("No enrollment record for THIS live module instance.\n");
 #endif
+#endif
             }
             else std::printf("No current module status. No Bluetooth action permitted.\n");
             std::printf("\n%s\n\n", message);
 #if defined(ARMODULE_NAV9) || defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
 #ifdef ARMODULE_NAV15
+#ifdef ARMODULE_NAV16
+            std::printf("READY/Pad1 + remote buttons released: Y ONCE saves SAME_SESSION context.\nGetter-only; NO pairing request, retry or global pairing/filter/radio change.\nAfter Context SAVED, X stops; + exits; return to FTPD.\nSetup90s, READY30min max. No reconnect/autoboot/wake support claimed.\n");
+#else
             std::printf("READY/Pad1 + remote buttons released: Y ONCE requests BLE enrollment.\nThis may save the configured remote; AD-derived profile is experimental.\nNo automatic pair/retry. Listed is NOT durable/encrypted-bond proof.\nSetup90s, READY30min max. + exits; test HOME; reopen SAME app, X stops.\nNo reconnect/autoboot/wake/microphone support is claimed.\n");
+#endif
 #else
             std::printf("One attempt,90s connected limit. No reconnect/autoboot.\nAfter READY: + exits; try D-pad/OK/Back on HOME.\nNo wake or microphone support is claimed.\n");
 #endif

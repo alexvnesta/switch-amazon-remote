@@ -2,9 +2,23 @@
 #pragma once
 #include "io.hpp"
 #include "../../mc_mitm/source/amazon_remote/enrollment.hpp"
+#include "../../mc_mitm/source/amazon_remote/enrollment_context.hpp"
 #include <fcntl.h>
 
 namespace armodule {
+// Getter-only evidence uses the same exclusive, synced, exact-readback write
+// contract as intent. A partial record is preserved and cannot be retried.
+inline bool PersistEnrollmentContext(const char *path,const amazon_remote::EnrollmentContextRecord &r,
+        ssize_t (*write_record)(int,const void *,size_t)=::write,
+        int (*sync_record)(int)=::fsync) {
+    if(!amazon_remote::ValidEnrollmentContext(r))return false;
+    const int fd=::open(path,O_WRONLY|O_CREAT|O_EXCL,0600);if(fd<0)return false;
+    const bool wrote=write_record(fd,&r,sizeof r)==ssize_t(sizeof r);
+    const bool synced=sync_record(fd)==0;const bool closed=::close(fd)==0;
+    amazon_remote::EnrollmentContextRecord saved{};
+    return wrote && synced && closed && ReadExact(path,saved) &&
+        amazon_remote::ValidEnrollmentContext(saved) && !std::memcmp(&saved,&r,sizeof r);
+}
 // Exclusive creation: an existing or partial intent prevents another request,
 // including across module restart. Never delete/truncate it from the module.
 // Injectable syscalls exercise actual publication failures in host tests.

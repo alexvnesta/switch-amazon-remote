@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 #include "libnx_session.hpp"
+#include "../../../tools/amazon-remote-pairing-audit/backend.hpp"
 #include "cached_characteristic_getter.hpp"
 #include "k7q3m7_descriptor.hpp"
 #include "diagnostic_log.hpp"
@@ -859,6 +860,32 @@ Result LibnxSession::ReadEnrollmentList(std::uint32_t &count,std::uint32_t &matc
     count=n;if(n>addresses.size())return Invalid();
     for(unsigned i=0;i<n;++i)matches+=!std::memcmp(&addresses[i],&target_,sizeof target_);
     return matches<=1?0:Invalid();
+}
+Result LibnxSession::ReadEnrollmentContext(std::uint64_t instance,EnrollmentContextRecord &out) {
+    out={};
+    if(enrollment_context_consumed_)return Invalid();
+    enrollment_context_consumed_=true;
+    const auto now=armTicksToNs(armGetSystemTick())/1000000;
+    if(!instance || !now || !input_budget_.Sustained() || !initialized_ || !native_open_ || !native_requests_ ||
+       !input_diagnostic_ || !have_connection_ || !connection_ || connection_==0xffffffff || !Ready() ||
+       !fingerprint_logged_ || !security_read_logged_ || !inputs_loaded_ || decoder_.Buttons() ||
+       !gatt_.System() || input_budget_.Expired(linked_ms_,now))return Invalid();
+    out.instance=instance;out.expected_handle=connection_;
+    out.before_binding=CheckCurrentTarget();
+    // The existing SDK getter adapter is reused, but its user/system client
+    // open/close operations are borrowed. Never replace or close the session's
+    // clients. Only the temporary btmsys getter client is opened/closed here.
+    struct BorrowedBackend:araudit::Backend {
+        Result OpenBle(){return 0;} void CloseBle(){}
+        Result OpenHid(){return 0;} void CloseHid(){}
+    } backend;
+    araudit::Address target{};std::memcpy(target.data(),target_.address,target.size());
+    out.snapshot=araudit::CollectContext(backend,target);
+    out.after_binding=CheckCurrentTarget();out.checksum=EnrollmentContextChecksum(out);
+    Log("ENROLLMENT_CONTEXT getter-only instance=%llu expected_handle=%lu binding_before=%08lx binding_after=%08lx; no pair request",
+        static_cast<unsigned long long>(instance),static_cast<unsigned long>(connection_),
+        static_cast<unsigned long>(out.before_binding),static_cast<unsigned long>(out.after_binding));
+    return 0; // Failed getters/binding checks remain visible in the record.
 }
 Result LibnxSession::EnrollOnce(std::uint64_t instance,EnrollmentIntent persist_intent) {
     if(enrollment_consumed_)return Invalid();

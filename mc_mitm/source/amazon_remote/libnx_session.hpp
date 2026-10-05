@@ -9,6 +9,7 @@
 #include "session_budget.hpp"
 #include "health_log_gate.hpp"
 #include "enrollment.hpp"
+#include "enrollment_context.hpp"
 
 namespace amazon_remote {
 using Logger = void (*)(const char *message);
@@ -42,12 +43,16 @@ public:
     // Explicit operator call only, never invoked by connection/Ready/polling.
     Result EnrollOnce(std::uint64_t instance,EnrollmentIntent persist_intent);
     const EnrollmentRecord &Enrollment() const {return enrollment_;}
+    // One operator-only getter snapshot using the already-open user/system
+    // clients. Does not enroll, connect, replace client ownership or radio state.
+    Result ReadEnrollmentContext(std::uint64_t instance,EnrollmentContextRecord &out);
 private:
     Result ReadEnrollmentList(std::uint32_t &count,std::uint32_t &matches);
     void PollEnrollment(std::uint64_t now);
     void EnrollmentFinish(EnrollmentState state,Result result);
     EnrollmentRecord enrollment_{};
     bool enrollment_consumed_{};
+    bool enrollment_context_consumed_{};
     const bool system_enrollment_;
     Result LoadCache(std::uint32_t connection);
     Result LoadFingerprintCache(std::uint32_t connection);

@@ -69,7 +69,7 @@ void ResultLog(const char *operation, Result rc) {
     char line[192]{};
     std::snprintf(line, sizeof line, "%s Result=%08lx", operation, static_cast<unsigned long>(rc)); Log(line);
 }
-#ifdef ARMODULE_NAV15
+#if defined(ARMODULE_NAV15) && !defined(ARMODULE_NAV16)
 bool EnrollmentIntent(const amazon_remote::EnrollmentRecord &record) {
     return log_healthy && record.instance==startup_record.instance &&
         armodule::PersistEnrollmentIntent(armodule::EnrollmentIntentPath,record);
@@ -194,9 +194,13 @@ int main(int, char **) {
 #ifdef ARMODULE_NAV13
 #ifdef ARMODULE_NAV15
     backend.SetLogger(Log,true);
+#ifdef ARMODULE_NAV16
+    Log("NAV16: same navigation; explicit Y getter-only context once at neutral READY; existing clients borrowed; NO PairDevice command");
+#else
     Log("NAV15: setup90s, Ready30min; explicit Y enrollment once after verified neutral READY; AD-derived profile is experimental; no automatic pair/reconnect");
 #ifdef ARMODULE_NAV15_SYSTEM
     Log("ENROLLMENT_ROUTE=system BTM cmd41 + paired-address cmd44; fixed route, no user-to-system fallback; no new privileges");
+#endif
 #endif
 #else
     backend.SetLogger(Log);
@@ -328,8 +332,17 @@ int main(int, char **) {
                 // a stale UI record can never authorize pairing by itself.
                 if(policy.Get()==armodule::State::Ready && controller.Attached() &&
                    !remote.Buttons() && log_healthy) {
+#ifdef ARMODULE_NAV16
+                    amazon_remote::EnrollmentContextRecord record{};
+                    const auto context_rc=remote.ReadEnrollmentContext(instance,record);
+                    const bool saved=!context_rc && log_healthy && armodule::PersistEnrollmentContext(armodule::EnrollmentContextPath,record);
+                    ResultLog("operator getter-only SAME_SESSION context; no pair request",context_rc);
+                    Log(saved?"ENROLLMENT_CONTEXT_SAVED: exclusive synced readback verified; no pair request":"ENROLLMENT_CONTEXT_NOT_SAVED: partials preserved; no retry or pair request");
+                    if(!saved || !log_healthy)stop(context_rc?context_rc:Invalid());
+#else
                     const auto enrollment_rc=remote.EnrollOnce(instance,EnrollmentIntent);
                     ResultLog("operator explicit BLE enrollment; Result0 is request acceptance only",enrollment_rc);
+#endif
                 } else Log("ENROLLMENT_REFUSED: live READY/owned pad/neutral input required; no request queued");
             }
 #endif

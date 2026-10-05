@@ -31,6 +31,8 @@ struct FakeState {
     Result system_open_result{},system_mtu_result{};
     unsigned system_opens{},system_closes{},system_mtu_calls{},system_getters{};
     unsigned pair_variant{},pair_calls{},paired_getters{},intent_calls{};bool listed{},system_enrollment{};
+    unsigned user_opens{},user_closes{},sys_opens{},sys_closes{},flag_queries{},system_connection_queries{};
+    bool context_active{};unsigned context_variant{};
     std::deque<BtdrvBleEventInfo> events; std::vector<std::string> logs;
 } f;
 BtdrvGattAttributeUuid U(u16 value) { BtdrvGattAttributeUuid u{}; u.size=2; u.uuid[0]=value&255; u.uuid[1]=value>>8; return u; }
@@ -370,7 +372,7 @@ Result eventWait(Event *event,u64) {
     return Timeout();
 }
 void eventClose(Event *event) { event->id=0; }
-Result btmuInitialize() { return 0; } void btmuExit() {}
+Result btmuInitialize() { ++f.user_opens;return 0; } void btmuExit() {++f.user_closes;}
 Result btdevInitialize() { return 0; } void btdevExit() {}
 Result btdevAcquireBleGattOperationEvent(Event *event) { event->id=1; return 0; }
 Result btdevAcquireBleServiceDiscoveryEvent(Event *event) { event->id=2; return 0; }
@@ -398,7 +400,7 @@ Result btmuGetBleScanResultsForGeneral(BtdrvBleScanResult*,u8,u8 *total) { *tota
 Result btmuGetBleScanResultsForSmartDevice(BtdrvBleScanResult*,u8,u8 *total) { *total=0; return 0; }
 Result btmuBleConnect(BtdrvAddress target) { assert(!std::memcmp(&target,&f.target,sizeof target)); ++f.connects; f.connected=f.discovery=true; return 0; }
 static Result PairedDevices(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *out,u8 count,u8 *total,bool system) {
-    assert(system==f.system_enrollment && (!system || (f.system_opens==1 && !f.system_closes)));
+    assert((f.context_active || system==f.system_enrollment) && (!system || (f.system_opens==1 && !f.system_closes)));
     assert(count==10 && p.company_id==0x171);
     const u8 pattern[]{4,0x27,2,0x7d,0,0};assert(!std::memcmp(p.pattern_data,pattern,6));++f.paired_getters;
     if(f.pair_variant==8 || (f.pair_variant==14 && f.pair_calls))return 0x5528f;
@@ -417,6 +419,20 @@ static Result PairDevice(u32 connection,BtdrvBleAdvertisePacketParameter p,bool 
 }
 Result btmuBleGetPairedDevices(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *out,u8 count,u8 *total) {return PairedDevices(p,out,count,total,false);}
 Result btmBleGetPairedAddresses(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *out,u8 count,u8 *total) {return PairedDevices(p,out,count,total,true);}
+Result btmBleGetConnectionState(BtdrvBleConnectionInfo *out,u8 count,u8 *total) {
+    assert(f.context_active && f.system_opens==1 && !f.system_closes && count==16);++f.system_connection_queries;
+    *total=f.context_variant==1?0:f.context_variant==3?16:1;
+    out[0]={f.context_variant==2?5u:4u,f.target,{}};
+    return f.context_variant==4?71:0;
+}
+Result btmsysInitialize(){assert(f.context_active);++f.sys_opens;return f.context_variant==5?72:0;}
+void btmsysExit(){++f.sys_closes;}
+Result btmsysIsGamepadPairingStarted(bool *out) {
+    ++f.flag_queries;*out=f.context_variant==7;
+    if(f.context_variant==8)f.address.address[0]^=1;
+    if(f.context_variant==9)f.now+=2001;
+    return f.context_variant==6?73:0;
+}
 Result btmuBlePairDevice(u32 connection,BtdrvBleAdvertisePacketParameter p) {return PairDevice(connection,p,false);}
 Result btmBlePairDevice(u32 connection,BtdrvBleAdvertisePacketParameter p) {return PairDevice(connection,p,true);}
 Result btdevConnectToGattServer(BtdrvAddress target) { return btmuBleConnect(target); }
@@ -560,6 +576,37 @@ int main() {
     for(unsigned variant=0;variant<3;++variant)SustainedFlow(variant);
     for(bool system:{false,true})for(unsigned variant=0;variant<23;++variant)EnrollmentFlow(variant,system);
     EnrollmentServiceGuards();
+    for(unsigned variant=0;variant<15;++variant) {
+        Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;
+        LibnxSession remote(Log,true,true,true,true,true,true);Start(remote);
+        if(variant!=10)assert(!Advance(remote) && remote.Ready());
+        if(variant==11){const u8 keyboard[]{0x52,0,0};Queue(4,0x1812,0x2a4d,0,keyboard,sizeof keyboard);f.now+=20;assert(!remote.Poll(f.now));}
+        if(variant==12)f.now+=1800000;
+        if(variant==14)remote.Close();
+        f.context_active=true;f.context_variant=variant;
+        const auto opens=f.user_opens,closes=f.user_closes,system_closes=f.system_closes;
+        const auto connects=f.connects,registers=f.registers,writes=f.writes,reads=f.characteristic_reads;
+        EnrollmentContextRecord r{};const auto rc=remote.ReadEnrollmentContext(variant==13?0:42,r);
+        assert(!f.pair_calls && !f.intent_calls && f.connects==connects && f.registers==registers && f.writes==writes && f.characteristic_reads==reads);
+        assert(f.user_opens==opens && f.user_closes==closes && f.system_opens==1 && f.system_closes==system_closes);
+        if(variant>=10)assert(rc && !f.sys_opens && !f.system_connection_queries);
+        else {
+            assert(!rc && ValidEnrollmentContext(r) && r.instance==42 && r.expected_handle==4 && !r.before_binding);
+            assert(f.sys_opens==1 && f.sys_closes==unsigned(variant!=5) && f.flag_queries==unsigned(variant!=5));
+            assert(f.paired_getters==2 && f.system_connection_queries==1);
+            const auto relation=araudit::Compare(r.snapshot);
+            assert(relation==(variant==1?araudit::ConnectionRelation::UserOnly:variant==2?araudit::ConnectionRelation::DifferentHandle:
+                (variant==3 || variant==4 || variant==9)?araudit::ConnectionRelation::Indeterminate:araudit::ConnectionRelation::SameHandle));
+            assert(bool(r.after_binding)==(variant==8));
+            assert(r.snapshot.pairing_started==unsigned(variant==7));
+            if(variant==5)assert(r.snapshot.sys_open==72 && r.snapshot.pairing_query==araudit::NotAttempted);
+            if(variant==6)assert(r.snapshot.pairing_query==73 && !r.snapshot.pairing_started);
+        }
+        const auto getters=f.system_connection_queries;EnrollmentContextRecord duplicate{};
+        assert(remote.ReadEnrollmentContext(42,duplicate) && f.system_connection_queries==getters && !f.pair_calls);
+        remote.Close();assert(!f.disconnects);
+    }
+    std::cout<<"PASS same-session enrollment context:15 actual adapter scenarios; borrowed clients preserved, binding checks, independent query errors, clock bounds, neutral/READY guards, one-shot and zero pairing requests. NOT hardware proof.\n";
     std::cout<<"PASS enrollment transport:46 scenarios across fixed user/system routes; no automatic/duplicate/fallback request; exact target/neutral/fingerprint guards and bounded list observation. NOT hardware proof.\n";
     for (unsigned variant=0;variant<6;++variant) SystemFlow(variant);
     for(unsigned command:{90u,91u,93u,94u})NativeRequestFailure(command);

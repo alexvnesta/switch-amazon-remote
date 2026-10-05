@@ -23,6 +23,9 @@ inline constexpr char StatusFsPath[]=ARMODULE_NAV15_CONFIG_FS "/status.bin";
 inline constexpr char EnrollmentIntentPath[]=ARMODULE_NAV15_CONFIG "/enrollment-intent.bin";
 inline constexpr char EnrollmentPath[]=ARMODULE_NAV15_CONFIG "/enrollment.bin";
 inline constexpr char EnrollmentTemp[]=ARMODULE_NAV15_CONFIG "/enrollment.tmp";
+#ifdef ARMODULE_NAV16
+inline constexpr char EnrollmentContextPath[]=ARMODULE_NAV15_CONFIG "/enrollment-context.bin";
+#endif
 #elif defined(ARMODULE_NAV14)
 inline constexpr std::uint32_t Version = 3;
 inline constexpr char Directory[] = "sdmc:/config/amazon-remote-nav14";

@@ -208,6 +208,23 @@ build/amazon-remote-navigation15s.nro: build/navigation15s-control.elf build/nav
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/navigation15s-control.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
 build/navigation14-control.elf: control/main.cpp $(HEADERS) Makefile | build/exefs
 	$(CXX) $(CXXFLAGS) -DARMODULE_NAV14 -DARMODULE_NAV13 -DARMODULE_NAV12 $(LDFLAGS) control/main.cpp $(LIBS) -o $@
+NAV16_FLAGS := -DARMODULE_NAV16 -DARMODULE_NAV15_SYSTEM -DARMODULE_NAV15 -DARMODULE_NAV14 -DARMODULE_NAV13 -DARMODULE_NAV12
+build/nav16-module.elf: main.cpp $(TRANSPORT) $(HEADERS) ../amazon-remote-pairing-audit/context.hpp ../amazon-remote-pairing-audit/backend.hpp Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) $(NAV16_FLAGS) $(LDFLAGS) -Wl,-Map,build/nav16-module.map main.cpp $(TRANSPORT) $(LIBS) -o $@
+build/nav16-exefs/main: build/nav16-module.elf
+	mkdir -p build/nav16-exefs
+	$(DEVKITPRO)/tools/bin/elf2nso $< $@
+build/nav16-exefs/main.npdm: module-nav15.json
+	mkdir -p build/nav16-exefs
+	$(DEVKITPRO)/tools/bin/npdmtool $< $@
+build/nav16-exefs.nsp: build/nav16-exefs/main build/nav16-exefs/main.npdm
+	$(DEVKITPRO)/tools/bin/build_pfs0 build/nav16-exefs $@
+build/navigation16-control.elf: control/main.cpp $(HEADERS) Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) $(NAV16_FLAGS) $(LDFLAGS) control/main.cpp $(LIBS) -o $@
+build/navigation16-control.nacp: Makefile | build/exefs
+	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Navigation 16" "switch-amazon-remote contributors" "0.2.0-a2-nav16" $@
+build/amazon-remote-navigation16.nro: build/navigation16-control.elf build/navigation16-control.nacp
+	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/navigation16-control.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
 build/navigation14-control.nacp: Makefile | build/exefs
 	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote Navigation 14" "switch-amazon-remote contributors" "0.2.0-a2-nav14" $@
 build/amazon-remote-navigation14.nro: build/navigation14-control.elf build/navigation14-control.nacp
@@ -262,5 +279,7 @@ host-test: tests/test_module.cpp tests/test_hdls.cpp tests/test_startup.cpp test
 	./build/test_enrollment14
 	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -DARMODULE_NAV15_SYSTEM -DARMODULE_NAV15 -DARMODULE_NAV14 -DARMODULE_NAV13 -DARMODULE_NAV12 -Itests/fake_sdk tests/test_navigation.cpp -o build/test_navigation15s
 	./build/test_navigation15s
+	$(HOST_CXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer $(NAV16_FLAGS) -Itests/fake_sdk tests/test_navigation.cpp -o build/test_navigation16
+	./build/test_navigation16
 HOST_CXX ?= c++
 .PHONY: all host-test

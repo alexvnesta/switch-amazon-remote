@@ -6,6 +6,7 @@
 #include <cstdint>
 using u8=std::uint8_t; using u16=std::uint16_t; using u32=std::uint32_t; using u64=std::uint64_t;
 using Result=u32;
+using s32=std::int32_t;
 inline constexpr unsigned Module_Libnx=345, Module_Kernel=1;
 inline constexpr unsigned LibnxError_BadInput=11, LibnxError_NotInitialized=12, LibnxError_IncompatSysVer=13, KernelError_TimedOut=117;
 constexpr Result MAKERESULT(unsigned module,unsigned description) { return module|(description<<9); }
@@ -27,6 +28,11 @@ struct BtdrvGattAttributeUuid { u32 size{}; u8 uuid[16]{}; };
 struct BtdrvGattId { u8 instance_id{}; u8 pad[3]{}; BtdrvGattAttributeUuid uuid{}; };
 struct BtdrvBleScanResult { u8 unknown{}; BtdrvAddress addr{}; u8 padding[0x139]{}; u32 count{}, tail{}; };
 struct BtdrvBleConnectionInfo { u32 connection_handle{}; BtdrvAddress addr{}; u8 pad[2]{}; };
+enum BtmProfile {BtmProfile_Hid=1};
+struct BtmDeviceCondition {BtdrvAddress address{};u32 profile{};};
+Result btmGetDeviceCondition(BtmProfile,BtmDeviceCondition*,std::size_t,s32*);
+Result btmBleGetConnectionState(BtdrvBleConnectionInfo*,u8,u8*);
+Result btmsysInitialize();void btmsysExit();Result btmsysIsGamepadPairingStarted(bool*);
 enum BtdrvGattAuthReqType { BtdrvGattAuthReqType_None=0, BtdrvGattAuthReqType_NoMitm=1 };
 enum BtdrvBleEventType { BtdrvBleEventType_ClientNotify=8 };
 struct FakeNotify {
