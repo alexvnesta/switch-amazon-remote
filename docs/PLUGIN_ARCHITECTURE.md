@@ -21,6 +21,9 @@ unchanged upstream button/report code, and identifies the actual missing native
 HID registration path. Diagnostic session budgets are temporary guards, not a
 product framework. No native-menu enrollment or observer replacement is enabled
 by that adapter. The working HDLS path remains available as the proven fallback.
+The [BLE enrollment audit](BLE_ENROLLMENT.md) separates saved BLE-list evidence,
+current native HID visibility and native-pairing-window state. It uses existing
+getters rather than inventing a page detector or treating a GATT read as bonding.
 
 Navigation14 verified one manually enrolled K7Q3M7 session and actual HOME input.
 Current code already runs input as a native background process; the companion

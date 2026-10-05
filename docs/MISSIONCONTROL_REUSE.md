@@ -51,6 +51,9 @@ touches controller output or changes the pending marker. It opens/closes only it
 own `btm:u` client. It does not read keys or persist any device addresses.
 
 The report records API results/counts and exact configured-target match counts.
+The built-in scopes are Nintendo-company accessory profiles, not an Amazon
+profile. The [BLE enrollment audit](BLE_ENROLLMENT.md) corrects that diagnostic
+limitation with an AD-derived Amazon query and key-free native-state getters.
 A positive match means a target record was returned in that query. A negative
 match is NOT proof of absence from all system bond storage: these are filtered
 scopes. Neither result establishes encryption, authenticated identity or durable

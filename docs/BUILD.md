@@ -9,7 +9,7 @@ make host-test
 python3 scripts/check_public_tree.py
 ```
 
-The first command runs13 ASAN/UBSAN transport/observer targets, including29 scenarios against the
+The first command runs the ASAN/UBSAN transport/observer targets, including scenarios against the
 actual libnx transport through a fake SDK, plus the module's65,536 mapping masks
 and resource/lifecycle/protocol tests. A separate module test compiles the actual
 HDLS adapter against a minimal fake SDK; that is not an ABI or permission proof.
@@ -27,6 +27,10 @@ python3 scripts/test_missioncontrol_reuse.py --source /path/to/MissionControl
 The getter-only paired-list diagnostic builds separately with
 `make -C tools/amazon-remote-bond-check`. It neither installs nor activates itself.
 See [reuse evidence and remaining seams](MISSIONCONTROL_REUSE.md).
+The consolidated Amazon-profile/native-state audit builds separately with
+`make -C tools/amazon-remote-pairing-audit`; its actual getter backend has a host
+test for call footprint, independent cleanup, errors and invalid inventories.
+See [BLE enrollment boundaries](BLE_ENROLLMENT.md).
 
 ## Switch probe and inactive module candidate
 
