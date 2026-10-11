@@ -6,6 +6,18 @@
 #include <fcntl.h>
 
 namespace armodule {
+#ifdef ARMODULE_NATIVE_OWNER
+// Used for both exclusive native intent and owner result. Partial records are
+// preserved; never overwrite/delete them to enable another native request.
+template<class T> bool SaveNativeExclusive(const char *path,const T &r,
+        ssize_t (*write_record)(int,const void *,size_t)=::write,
+        int (*sync_record)(int)=::fsync){
+    const int fd=::open(path,O_WRONLY|O_CREAT|O_EXCL,0600);if(fd<0)return false;
+    const bool wrote=write_record(fd,&r,sizeof r)==ssize_t(sizeof r);
+    const bool synced=sync_record(fd)==0;const bool closed=::close(fd)==0;
+    T back{};return wrote && synced && closed && ReadExact(path,back) && !std::memcmp(&back,&r,sizeof r);
+}
+#endif
 // Getter-only evidence uses the same exclusive, synced, exact-readback write
 // contract as intent. A partial record is preserved and cannot be retried.
 inline bool PersistEnrollmentContext(const char *path,const amazon_remote::EnrollmentContextRecord &r,

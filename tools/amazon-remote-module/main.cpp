@@ -11,13 +11,31 @@
 #include "hdls_backend.hpp"
 #include "io.hpp"
 #include "protocol.hpp"
+#ifdef ARMODULE_LATENCY_A6
+#include "compact_log.hpp"
+#endif
+#ifdef ARMODULE_AUTOMATIC_A1
+#include "automatic_start.hpp"
+#ifdef ARMODULE_STARTUP_A4
+#include "startup_power.hpp"
+#endif
+#endif
+#ifdef ARMODULE_STARTUP_TRACE
+#include "arm_startup_diagnostic.hpp"
+#endif
 #include "config.hpp"
+#ifdef ARMODULE_DISCOVERY_TRACE
+#include "discovery_diagnostic.hpp"
+#endif
 #include "startup_storage.hpp"
 #ifdef ARMODULE_NAV15
 #include "enrollment_storage.hpp"
 #endif
 #if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
 #include "status_storage.hpp"
+#ifdef ARMODULE_AUTOMATIC_A2
+#include "restartable_status.hpp"
+#endif
 #endif
 #ifdef ARMODULE_NAV12
 #include "idle_health.hpp"
@@ -42,6 +60,10 @@ constinit armodule::StartupRecord startup_record{};
 FsFileSystem startup_fs{}; bool startup_fs_open{};
 amazon_remote::RotatingLog log_file;
 bool log_healthy{};
+#ifdef ARMODULE_LATENCY_A6
+armodule::LogTiming log_timing;
+std::uint64_t last_timed_input_sequence{},last_timed_input_received{};
+#endif
 #ifdef ARMODULE_NAV13
 bool log_stopped{};
 #endif
@@ -61,10 +83,27 @@ void Log(const char *message) {
 #ifdef ARMODULE_NAV13
     if (log_stopped) return;
 #endif
+#ifdef ARMODULE_LATENCY_A6
+    if(armodule::RedundantLog(message)){log_timing.Omit();return;}
+    const auto before=Now();
+#endif
     char line[amazon_remote::RotatingLog::LineLimit]{};
     amazon_remote::FormatLogLine(line, sizeof line, start_ms, Now(), message);
     if (!log_file.Write(line)) log_healthy = false;
+#ifdef ARMODULE_LATENCY_A6
+    log_timing.Record(before,Now());
+#endif
 }
+#ifdef ARMODULE_LATENCY_A6
+void LogTimingSummary(const char *phase) {
+    char line[256]{};
+    std::snprintf(line,sizeof line,"LATENCY_A6_LOG_IO phase=%s writes=%llu omitted=%llu total_ms=%llu max_ms=%llu invalid_clocks=%llu; cumulative_module_lifetime_excludes_this_summary",
+        phase,static_cast<unsigned long long>(log_timing.writes),static_cast<unsigned long long>(log_timing.omitted),
+        static_cast<unsigned long long>(log_timing.total_ms),static_cast<unsigned long long>(log_timing.max_ms),
+        static_cast<unsigned long long>(log_timing.invalid_clocks));
+    Log(line);
+}
+#endif
 void ResultLog(const char *operation, Result rc) {
     char line[192]{};
     std::snprintf(line, sizeof line, "%s Result=%08lx", operation, static_cast<unsigned long>(rc)); Log(line);
@@ -73,6 +112,13 @@ void ResultLog(const char *operation, Result rc) {
 bool EnrollmentIntent(const amazon_remote::EnrollmentRecord &record) {
     return log_healthy && record.instance==startup_record.instance &&
         armodule::PersistEnrollmentIntent(armodule::EnrollmentIntentPath,record);
+}
+#endif
+#ifdef ARMODULE_NATIVE_OWNER
+bool NativeIntent(const arnativebond::Record &r){
+    return log_healthy && arnativebond::Valid(r) && r.instance==startup_record.instance &&
+        r.state==unsigned(arnativebond::State::IntentSaved) && !r.request_issued &&
+        armodule::SaveNativeExclusive(arnativebond::IntentPath,r);
 }
 #endif
 bool Enabled() {
@@ -89,8 +135,16 @@ bool Target(BtdrvAddress &target) {
     std::memcpy(target.address, address.data(), address.size()); return true;
 }
 bool Pending() {
+#ifdef ARMODULE_AUTOMATIC_A1
+    // The old manual diagnostic marker is preserved, not erased or reused.
+    // A1 uses an exclusive per-attempt journal. The unchanged C2 companion's
+    // Available lease + unused peer preparation gate prevents same-boot reuse,
+    // even if this process exits and somebody manually relaunches it.
+    return false;
+#else
     struct stat marker{}; errno = 0;
     return ::stat("sdmc:/config/amazon-remote/link-test-pending.txt", &marker) == 0 || errno != ENOENT;
+#endif
 }
 Result Preflight() {
     auto rc = setsysInitialize(); if (R_FAILED(rc)) return rc;
@@ -160,9 +214,34 @@ int main(int, char **) {
     log_healthy = log_file.Open(armodule::LogPath);
     Checkpoint(armodule::StartupStage::Log, log_healthy ? 0 : Invalid());
     if (!log_healthy) return 0;
+#ifdef ARMODULE_LATENCY_A6
+    Log("LATENCY_A6: compact diagnostics and host-side input timing only; A5 radio/security/retry behavior unchanged; physical press and advertising start are not observed");
+#endif
+#ifdef ARMODULE_HID_INFO_H1
+    Log("HID_INFO_H1: one optional read after READY; pairing/sleep policy unchanged; this is not a wake implementation");
+#endif
+#ifdef ARMODULE_AUTOMATIC_A1
+#ifdef ARMODULE_STARTUP_A4
+    Log("STARTUP_A4: initially operational after successful registration and health qualification; first PSC event revokes bootstrap; later wake requires acknowledged FullAwake; saved pairing unchanged");
+#endif
+#ifdef ARMODULE_RETRY_A5
+    Log("RETRY_A5: maximum three initial link requests, only after narrow observed early failure and verified absence; pending timeouts and security failures never retry");
+#endif
+#ifdef ARMODULE_WAKE_A3
+#ifndef ARMODULE_RETRY_A5
+    Log("WAKE_A3: saved-only startup and completed-session sleep resume; 2s health qualification; max8 sessions per boot; no failed-connect retry or new pairing");
+#endif
+#else
+#ifdef ARMODULE_AUTOMATIC_A2
+    Log("AUTO_A2: preserve prior status before first write; same A1 saved-key transport and one-attempt-per-boot guard");
+#endif
+    Log("AUTO_A1: wait FULL AWAKE + stable IDLE, then saved-only automatic connect; one attempt per boot; no new pairing or automatic retry");
+#endif
+#else
     Log(armodule::StartupDiagnosticOnly ?
         "Amazon Remote startup-diag1: Bluetooth commands disabled; neutral Y check only" :
         "Amazon Remote navigation: IDLE until operator A/ZL; bounded session, no boot scan/reconnect/wake");
+#endif
     // Current public BTM-layout workaround has device evidence only on 22.5.0.
     Checkpoint(armodule::StartupStage::FirmwareGuard, hosversionGet() == MAKEHOSVERSION(22,5,0) ? 0 : Invalid());
     if (hosversionGet() != MAKEHOSVERSION(22,5,0)) { Log("Unsupported firmware: no Bluetooth or controller setup"); return 0; }
@@ -173,6 +252,9 @@ int main(int, char **) {
     Checkpoint(armodule::StartupStage::PscRegister, rc);
     ResultLog("psc register custom id0xbe (device validation pending)", rc);
     if (R_FAILED(rc)) { pscmExit(); return 0; }
+#ifdef ARMODULE_STARTUP_A4
+    armodule::StartupPower startup_power(true);
+#endif
 #if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
 #ifdef ARMODULE_NAV12
 #ifdef ARMODULE_NAV15_SYSTEM
@@ -186,7 +268,12 @@ int main(int, char **) {
 #else
     amazon_remote::LibnxSession remote(Log,true,true,true);
 #endif
-    armodule::StatusWriter status_writer;std::uint64_t status_error_since{};
+#ifdef ARMODULE_AUTOMATIC_A2
+    armodule::RestartableStatusWriter status_writer;bool status_archive_logged{};
+#else
+    armodule::StatusWriter status_writer;
+#endif
+    std::uint64_t status_error_since{};
 #else
     amazon_remote::LibnxSession remote(Log, true, true);
 #endif
@@ -194,7 +281,38 @@ int main(int, char **) {
 #ifdef ARMODULE_NAV13
 #ifdef ARMODULE_NAV15
     backend.SetLogger(Log,true);
-#ifdef ARMODULE_NAV17
+#ifdef ARMODULE_RECONNECT_CHECK
+#ifdef ARMODULE_SCAN_ASSISTED_CHECK
+#ifdef ARMODULE_MANUFACTURER_SCAN_CHECK
+#ifdef ARMODULE_DISCONNECT_CHECK
+#ifdef ARMODULE_CONNECT_DISPATCH
+#ifdef ARMODULE_NATIVE_PEER_C1
+#ifdef ARMODULE_NATIVE_HCI_C2
+    Log("HCI STATUS C2: same saved-peer connection, passive received command-status evidence, no enrollment or automatic retries");
+#else
+    Log("SAVED PEER C1: saved record plus native BLE identity readback before physical ZL; no discovery requirement, auto-connect or pairing fallback");
+#endif
+#else
+    Log("NAV17-P3: physical ZL requires sighting <=3000ms at real-clock admission, dispatch within250ms and capture lease; same D3 input/cleanup; no retry/rearm/bond");
+#endif
+#endif
+    Log("NAV17-D3: same connect/input; owned-link cleanup via existing system BTM client with final dual-view binding; no retry, fallback, bonding, or rearm");
+#elif defined(ARMODULE_STARTUP_TRACE)
+    Log("NAV17-S3: S2 scan/input unchanged; separate ARM startup checkpoints; capture-closed UI requires a checksummed current-instance failure record. NO guard reset/rearm/retry or new Bluetooth operations");
+#else
+    Log("NAV17-S2: exact captured manufacturer-filter general scan instead of HID smart scan; same fresh exact-target sighting and physical ZL; user/system prechecks retained; NO explicit bond, retry, new client, wildcard, global driver filter or automatic connect");
+#endif
+#else
+    Log("NAV17-S1: existing HID scan plus fresh target-only sighting before one physical ZL connection; user/system prechecks retained; NO explicit bond, retry, new client, global filter or automatic connect");
+#endif
+#elif defined(ARMODULE_KNOWN_RECONNECT_CHECK)
+    Log("NAV17-K1: explicit known-address reconnect experiment, NO scan or explicit bond request; configured target and fresh user/system prechecks plus exact fingerprint/input guards retained");
+#elif defined(ARMODULE_DISCOVERY_TRACE)
+    Log("NAV17-R2: R1 admission unchanged; existing discovery getter outcomes logged; NO extra Bluetooth client, scan filter change, pairing, rearm or automatic connect");
+#else
+    Log("NAV17-R1: ordinary-mode reconnect check; system/user preconnect refusal; NO explicit bond/enrollment requests; no automatic reconnect or saved-key reuse claim");
+#endif
+#elif defined(ARMODULE_NAV17)
     Log("NAV17: same navigation; Y getter-only full UUID census plus cached client ARUID; NO PairDevice command, no ownership changes");
 #elif defined(ARMODULE_NAV16)
     Log("NAV16: same navigation; explicit Y getter-only context once at neutral READY; existing clients borrowed; NO PairDevice command");
@@ -213,6 +331,9 @@ int main(int, char **) {
     armodule::InputHoldGuard hold_guard;
     Service mc{}; bool capture_owned = false, awake = true, shutdown = false;
     BtdrvAddress target{}; amazon_remote::CaptureLeaseWire lease{};
+#ifdef ARMODULE_DISCOVERY_TRACE
+    armodule::DiscoveryDiagnostic discovery_diagnostic;
+#endif
 #ifdef ARMODULE_NAV14
     armodule::ConnectionCapture connection_capture;
     std::uint64_t connection_capture_ms{};
@@ -256,10 +377,7 @@ int main(int, char **) {
 #ifndef ARMODULE_NAV12
     std::uint64_t last_status = 0;
 #endif
-    const auto cleanup = [&] {
-#ifdef ARMODULE_NAV14
-        capture_connections(true); // Final snapshot before ending our lease/closing MC.
-#endif
+    const auto detach_pad = [&] {
         const auto pad_result = controller.Stop();
         const auto final_trace=backend.Trace(instance,Now());
         if (final_trace.open_result!=armodule::HdlsNotAttempted)
@@ -267,7 +385,19 @@ int main(int, char **) {
         status.pad_cleanup_result = controller.CleanupError();
         if (!status.result && pad_result) status.result = pad_result;
         ResultLog("neutralize/detach owned pad", pad_result);
+        status.link_ready = status.buttons = status.output_attached = 0;
+        return pad_result;
+    };
+    const auto cleanup = [&] {
+#ifdef ARMODULE_DISCOVERY_TRACE
+        discovery_diagnostic.Finish(Log); // Summary before ending the lease/log.
+#endif
+#ifdef ARMODULE_NAV14
+        capture_connections(true); // Final snapshot before ending our lease/closing MC.
+#endif
+        const auto pad_result = detach_pad();
         remote.Close();
+        if (!status.result && remote.DisconnectResult()) status.result=remote.DisconnectResult();
 #ifdef ARMODULE_NAV15
         if(!publish_enrollment() && !status.result)status.result=Invalid();
 #endif
@@ -276,19 +406,74 @@ int main(int, char **) {
         status.link_ready = status.buttons = status.output_attached = 0;
         return pad_result;
     };
-    const auto stop = [&](Result result) {
+    const auto finish_stop = [&](Result result) {
+#ifdef ARMODULE_DISCONNECT_CHECK
+        const bool confirmed_link = remote.LinkAttempted() &&
+            remote.GetDisconnectState()==amazon_remote::DisconnectState::Confirmed;
+#endif
         const auto pad_result = cleanup();
         // A later successful X/Stop must not erase a recorded failure.
-        if (result || pad_result) status.result = result ? result : pad_result;
+        if (!status.result && (result || pad_result)) status.result = result ? result : pad_result;
         policy.Stop();
+#ifdef ARMODULE_DISCONNECT_CHECK
+        if (confirmed_link) policy.StopDisconnected();
+        char stop_summary[192];
+        std::snprintf(stop_summary,sizeof stop_summary,
+            "D3_STOP_COMPLETE owned_link_absent=%u result=%08lx pad_cleanup=%08lx rearm_allowed=0 bond_saved_unverified=1",
+            confirmed_link,static_cast<unsigned long>(status.result),static_cast<unsigned long>(status.pad_cleanup_result));
+        Log(stop_summary);
+#endif
+#ifdef ARMODULE_LATENCY_A6
+        LogTimingSummary("stopped");
+#endif
 #ifdef ARMODULE_NAV13
         // A stopped one-shot session will never reconnect. Release the text-log
         // handle AFTER all failure/cleanup events so FTP can capture this boot.
         log_file.Close();log_stopped=true;
 #endif
     };
+    const auto stop = [&](Result result) {
+#ifdef ARMODULE_RECONNECT_CHECK
+        if (result && !status.result) status.result=result;
+        if (policy.Get()==armodule::State::Stopping || policy.Get()==armodule::State::Stopped ||
+            policy.Get()==armodule::State::Disconnected) return;
+        // No session owns a link in IDLE. Keep preflight failures simple.
+        if (!policy.Active()) { finish_stop(result);return; }
+        const auto pad_result=detach_pad();
+        if (pad_result && !status.result) status.result=pad_result;
+        if (!policy.BeginStop()) { finish_stop(Invalid());return; }
+        const auto disconnect_result=remote.BeginOwnedDisconnect(Now());
+        if (remote.GetDisconnectState()!=amazon_remote::DisconnectState::Waiting)
+            finish_stop(disconnect_result);
+#else
+        finish_stop(result);
+#endif
+    };
     const auto sighting = [&](amazon_remote::SightingWire &wire) {
-        if (policy.Get() != armodule::State::Scanning || !serviceIsActive(&mc)) return false;
+        if (policy.Get() != armodule::State::Scanning) return false;
+#if defined(ARMODULE_KNOWN_RECONNECT_CHECK) || defined(ARMODULE_NATIVE_PEER_C1)
+        (void)wire;
+        // Means operator-connect admission, NOT remote discovery.
+        return remote.KnownReconnectPrepared() && capture_owned && serviceIsActive(&mc) && LiveLease(lease, Now());
+#else
+        if (!serviceIsActive(&mc)) {
+#ifdef ARMODULE_DISCOVERY_TRACE
+            discovery_diagnostic.Record({armodule::DiscoveryStep::NoService},Log);
+#endif
+            return false;
+        }
+#ifdef ARMODULE_DISCOVERY_TRACE
+        struct Reader {
+            Service &mc;
+            std::uint32_t Lease(amazon_remote::CaptureLeaseWire &value){return ReadLease(mc,value);}
+            std::uint32_t Sighting(amazon_remote::SightingWire &value){
+                return serviceDispatch(&mc,65000,.buffer_attrs={SfBufferAttr_HipcPointer | SfBufferAttr_Out},.buffers={{&value,sizeof value}});
+            }
+            std::uint64_t Clock(){return Now();}
+        } reader{mc};
+        amazon_remote::SightingAddress address{};std::memcpy(address.data(),target.address,address.size());
+        return armodule::ObserveDiscovery(reader,LiveLease,address,remote.ScanStarted(),lease,wire,discovery_diagnostic,Log);
+#else
         auto result = ReadLease(mc, lease);
         if (R_FAILED(result) || !LiveLease(lease, Now())) return false;
         result = serviceDispatch(&mc, 65000,
@@ -296,39 +481,181 @@ int main(int, char **) {
         amazon_remote::SightingAddress address{}; std::memcpy(address.data(), target.address, address.size());
         return R_SUCCEEDED(result) && LiveLease(lease, Now()) &&
             amazon_remote::AssessSighting(wire, address, remote.ScanStarted(), Now()) == amazon_remote::SightingAssessment::FreshCandidate;
+#endif
+#endif
     };
+#ifdef ARMODULE_AUTOMATIC_A1
+    armodule::AutomaticStart automatic;
+    bool full_awake = false;
+#ifdef ARMODULE_WAKE_A3
+    bool wake_pending{};std::uint64_t wake_poll{},sleep_edge_wait{};unsigned wake_cycles{};
+#endif
+#endif
     while (!shutdown) {
         // Power event is checked before SD/BT/output. No applet API in sysmodule.
         rc = eventWait(&pm.event, 0);
         if (R_SUCCEEDED(rc)) {
+#ifdef ARMODULE_STARTUP_A4
+            startup_power.EventObserved(); // Revoke before even reading the request.
+#endif
             PscPmState state{}; u32 flags{}; rc = pscPmModuleGetRequest(&pm, &state, &flags);
+#ifdef ARMODULE_STARTUP_A4
+            startup_power.Request(unsigned(state),rc);
+#endif
             if (R_FAILED(rc)) { stop(rc); break; }
             const auto decision = armodule::ClassifyPower(unsigned(state));
+#ifdef ARMODULE_WAKE_A3
+            {char detail[128]{};std::snprintf(detail,sizeof detail,"WAKE_A3_POWER state=%lu previous_full_awake=%u pending=%u",static_cast<unsigned long>(state),full_awake,wake_pending);Log(detail);}
+#endif
+#ifdef ARMODULE_STARTUP_A4
+            full_awake = false;
+#endif
+#ifdef ARMODULE_AUTOMATIC_A1
+#ifndef ARMODULE_STARTUP_A4
+            if (unsigned(state) == 0) full_awake = true;
+            if (decision.suspend) full_awake = false;
+#endif
+#endif
             if (!decision.valid) { if (awake) stop(Invalid()); shutdown = true; }
             else if (decision.suspend) {
+#ifdef ARMODULE_AUTOMATIC_A1
+                if (!automatic.Consumed() && policy.Get() == armodule::State::Idle) {
+                    automatic.PauseUnused(); idle_health.Reset();idle_pass_logged=false;
+                    if (awake) { Log("AUTO_A1: startup power pause before any attempt"); log_file.Close(); }
+                } else {
+#endif
+#ifdef ARMODULE_WAKE_A3
+                if(awake && !decision.shutdown && policy.Get()==armodule::State::Ready) {
+                    const auto pad_rc=detach_pad();
+                    if(!pad_rc && remote.RetireForSleep()) {
+                        if(capture_owned && serviceIsActive(&mc))ResultLog("end sleep capture",serviceDispatch(&mc,65003));
+                        capture_owned=false;serviceClose(&mc);lease={};
+                        wake_pending=true;wake_poll=sleep_edge_wait=0;
+                        Log("WAKE_A3_SLEEP_PENDING: output neutral; local clients retired; next fully-awake transition requires old-link absence");
+                    } else {cleanup();status.result=pad_rc?pad_rc:Invalid();}
+                    log_file.Close();
+                } else
+#endif
                 if (awake) { cleanup(); Log("Suspend/shutdown: neutralize/detach attempted; no automatic reconnect"); log_file.Close(); }
-                policy.Suspend(); awake = false; shutdown = decision.shutdown;
+                policy.Suspend();
+#ifdef ARMODULE_AUTOMATIC_A1
+                }
+#endif
+                awake = false; shutdown = decision.shutdown;
             } else if (decision.resume && !awake) {
-                awake = true; policy.Resume();
+                awake = true;
+#ifdef ARMODULE_AUTOMATIC_A1
+                if (!automatic.Consumed() && policy.Get() == armodule::State::Idle) {
+                    log_healthy = log_file.Open(armodule::LogPath); idle_health.Reset();
+                } else {
+#endif
+#ifdef ARMODULE_WAKE_A3
+                if(wake_pending){log_stopped=false;log_healthy=log_file.Open(armodule::LogPath);Log("WAKE_A3_RESUME: waiting for full-awake acknowledgement and exact previous-session retirement");}
+                else {
+#endif
+                policy.Resume();
+#ifdef ARMODULE_NAV13
+                // Suspend already closed the logger. Resume is terminal for
+                // this one-shot session; do not reopen a handle blocking FTP.
+                log_stopped = true;
+#else
                 log_healthy = log_file.Open(armodule::LogPath);
+#endif
+#ifdef ARMODULE_WAKE_A3
+                }
+#endif
+#ifdef ARMODULE_AUTOMATIC_A1
+                }
+#endif
             }
             rc = pscPmModuleAcknowledge(&pm, state);
+#ifdef ARMODULE_STARTUP_A4
+            startup_power.Acknowledge(rc);
+            full_awake = startup_power.CanResume();
+            if(awake){char detail[128]{};std::snprintf(detail,sizeof detail,"STARTUP_A4_POWER_ACK state=%lu result=%08lx start=%u resume=%u",static_cast<unsigned long>(state),static_cast<unsigned long>(rc),startup_power.CanStart(),full_awake);Log(detail);}
+#endif
             if (R_FAILED(rc)) { if (awake) stop(rc); break; }
+#ifdef ARMODULE_STARTUP_A4
+            // Drain already-pending transitions before any automatic command.
+            // Bootstrap is never reconstructed on sleep, Stop, or session reset.
+            continue;
+#endif
         } else if (rc != MAKERESULT(Module_Kernel, KernelError_TimedOut)) { if (awake) stop(rc); break; }
         if (shutdown) break;
         if (!awake) { svcSleepThread(100000000); continue; }
         const auto now = Now();
         if (now < last_clock) { stop(Invalid()); break; } last_clock = now;
         armodule::Command command{};
-        if (armodule::ReadExact(armodule::CommandPath, command) && armodule::ValidCommand(command, instance, status.last_sequence, now)) {
-            status.last_sequence = command.sequence;
-            if (std::remove(armodule::CommandPath) != 0) { stop(Invalid()); }
+        const bool file_command = armodule::ReadExact(armodule::CommandPath, command) &&
+            armodule::ValidCommand(command, instance, status.last_sequence, now);
+#ifdef ARMODULE_WAKE_A3
+        if(wake_pending && file_command && command.kind==unsigned(armodule::CommandKind::Stop)){
+            wake_pending=false;policy.Stop();finish_stop(0);
+        }
+        if(wake_pending && full_awake && (!wake_poll || now-wake_poll>=250)){
+            wake_poll=now;bool resumed{};const auto wake_rc=remote.ResumeAfterSleep(now,resumed);
+            if(wake_rc || !log_healthy){wake_pending=false;finish_stop(wake_rc?wake_rc:Invalid());}
+            else if(resumed){
+                if(!controller.PrepareNextSession() || !policy.ResumeVerifiedSleep()){
+                    wake_pending=false;finish_stop(Invalid());
+                }else{
+                    wake_pending=false;++wake_cycles;automatic={};idle_health.Reset();idle_pass_logged=false;
+                    hold_guard={};status.result=0;
+                    Log("WAKE_A3_RESUMED: fresh saved-only session admitted; short health qualification then automatic connection");
+                }
+            }
+        }
+#endif
+        bool internal_command = false;
+#ifdef ARMODULE_AUTOMATIC_A1
+        if (!file_command) {
+#ifdef ARMODULE_STARTUP_A4
+            const bool start_allowed = startup_power.CanStart();
+#else
+            const bool start_allowed = full_awake;
+#endif
+            const auto action = automatic.Next(now, start_allowed, idle_health.Ready(now),
+                policy.Get(), remote.KnownReconnectPrepared());
+#ifdef ARMODULE_STARTUP_A4
+            if(action==armodule::AutomaticStart::Action::Arm)
+                Log(startup_power.IsBootstrap()?"STARTUP_A4_ARM: initial operational bootstrap; no FullAwake snapshot claimed":"STARTUP_A4_ARM: acknowledged FullAwake transition");
+#endif
+            internal_command = action != armodule::AutomaticStart::Action::None;
+            command.kind = action == armodule::AutomaticStart::Action::Arm ? unsigned(armodule::CommandKind::Arm) :
+                action == armodule::AutomaticStart::Action::Link ? unsigned(armodule::CommandKind::Link) : unsigned(armodule::CommandKind::Stop);
+            if (internal_command) Log(action == armodule::AutomaticStart::Action::Arm ? "AUTO_A1: automatic ARM" :
+                action == armodule::AutomaticStart::Action::Link ? "AUTO_A1: saved peer prepared; automatic CONNECT" : "AUTO_A1: fail-closed startup stop");
+        }
+#endif
+        if (file_command || internal_command) {
+            if (file_command) status.last_sequence = command.sequence;
+            if (file_command && std::remove(armodule::CommandPath) != 0) { stop(Invalid()); }
             else if (armodule::StartupDiagnosticOnly &&
                 (command.kind == unsigned(armodule::CommandKind::Arm) || command.kind == unsigned(armodule::CommandKind::Link))) {
                 Log("Diagnostic build: ARM/LINK ignored; no Bluetooth initialization");
             }
             else if (command.kind == unsigned(armodule::CommandKind::Stop)) stop(0);
 #ifdef ARMODULE_NAV15
+#ifdef ARMODULE_NATIVE_OWNER
+            else if(command.kind==unsigned(armodule::CommandKind::NativeBond)) {
+                arnativebond::OwnerEnvironment env{};
+                env.status=status;env.status.state=unsigned(policy.Get());env.status.now_ms=Now();
+                env.status.output_attached=controller.Attached();env.status.buttons=remote.Buttons();
+                env.status.acknowledged_buttons=controller.LastAcknowledgedButtons();
+                env.status.successful_writes=controller.SuccessfulWrites();
+                env.status.pad_cleanup_result=controller.CleanupError();
+                env.status.reserved=armodule::StatusChecksum(env.status);env.startup=startup_record;
+                env.pad_attached=controller.Attached();env.log_healthy=log_healthy;
+                (void)armodule::ReadExact(armodule::EnrollmentContextPath,env.context);
+                const auto outcome=remote.NativeBondOnce(command.sequence,env,NativeIntent);
+                const bool saved=arnativebond::ValidOwnerResult(outcome) &&
+                    armodule::SaveNativeExclusive(arnativebond::OwnerResultPath,outcome);
+                ResultLog(outcome.trial.request_issued?"OWNER_NATIVE_REQUEST issued once; acceptance is NOT bond proof":"OWNER_NATIVE_REQUEST refused; no request sent",outcome.trial.request_result);
+                Log(saved?"OWNER_NATIVE_RESULT_SAVED: exclusive synced readback verified":"OWNER_NATIVE_RESULT_SAVE_FAILED: preserve partials; do not retry");
+                if(!saved || !log_healthy)stop(Invalid());
+            }
+#endif
+#ifndef ARMODULE_RECONNECT_CHECK
             else if(command.kind==unsigned(armodule::CommandKind::Enroll)) {
                 // Live session repeats every identity/handle/fingerprint guard;
                 // a stale UI record can never authorize pairing by itself.
@@ -348,6 +675,7 @@ int main(int, char **) {
                 } else Log("ENROLLMENT_REFUSED: live READY/owned pad/neutral input required; no request queued");
             }
 #endif
+#endif
             else if (command.kind == unsigned(armodule::CommandKind::CheckController) && policy.CheckController()) {
                 // No remote.Initialize, MC capture, scan, link or target-file access.
                 rc = log_healthy ? armodule::NeutralControllerCheck(controller) : Invalid();
@@ -364,19 +692,85 @@ int main(int, char **) {
             }
 #endif
             else if (command.kind == unsigned(armodule::CommandKind::Arm) && policy.Get() == armodule::State::Idle) {
+#ifdef ARMODULE_STARTUP_TRACE
+                const bool armed=policy.Arm();ResultLog("ARM policy.arm",armed?0:Invalid());
+                if(!armed || !log_healthy)rc=Invalid();
+                else {
+                    const bool pending=Pending();ResultLog("ARM pending-marker absence",pending?Invalid():0);
+                    if(pending)rc=Invalid();
+                    else {
+                        const bool configured=Target(target);ResultLog("ARM configured-target read/parse",configured?0:Invalid());
+                        if(!configured || !log_healthy)rc=Invalid();
+                        else {rc=Preflight();ResultLog("ARM radio/settings preflight (getters only)",rc);}
+                    }
+                }
+                if(R_SUCCEEDED(rc) && !log_healthy)rc=Invalid();
+                if(R_SUCCEEDED(rc)){rc=smGetService(&mc,"mc");ResultLog("ARM observer service open",rc);}
+                if(R_SUCCEEDED(rc) && !log_healthy)rc=Invalid();
+#else
                 if (!policy.Arm() || !log_healthy || Pending() || !Target(target)) rc = Invalid();
                 else rc = Preflight();
                 if (R_SUCCEEDED(rc)) rc = smGetService(&mc, "mc");
+#endif
 #ifdef ARMODULE_NAV14
                 if (R_SUCCEEDED(rc)) {
                     amazon_remote::ConnectionEvidenceWire wire{};
                     rc=serviceDispatch(&mc,65004,
                         .buffer_attrs={SfBufferAttr_HipcPointer | SfBufferAttr_Out},.buffers={{&wire,sizeof wire}});
-                    if (R_SUCCEEDED(rc) && (!connection_capture.Accept(wire,Now(),Log) || wire.target_count || wire.overflow)) rc=Invalid();
+                    if (R_SUCCEEDED(rc) && (!connection_capture.Accept(wire,Now(),Log) ||
+#ifdef ARMODULE_WAKE_A3
+                        (!wake_cycles && (wire.target_count || wire.overflow))
+#else
+                        wire.target_count || wire.overflow
+#endif
+                    )) rc=Invalid();
                     connection_capture_checked=R_SUCCEEDED(rc);
                     ResultLog("observer connection evidence preflight; failure prevents Bluetooth initialization",rc);
                 }
 #endif
+#ifdef ARMODULE_STARTUP_TRACE
+                if(R_SUCCEEDED(rc) && !log_healthy)rc=Invalid();
+                if(R_SUCCEEDED(rc)) {
+                    struct ArmBackend {
+                        Service &mc;amazon_remote::CaptureLeaseWire &last;
+                        amazon_remote::LibnxSession &remote;BtdrvAddress target;bool &owned;
+                        std::uint64_t instance;
+                        std::uint32_t Invalid(){return ::Invalid();}
+                        std::uint32_t Read(amazon_remote::CaptureLeaseWire &wire){auto result=ReadLease(mc,wire);last=wire;return result;}
+                        std::uint32_t Arm(){auto result=serviceDispatch(&mc,65001);owned=R_SUCCEEDED(result);return result;}
+                        bool Live(const amazon_remote::CaptureLeaseWire &wire){return LiveLease(wire,Now());}
+                        std::uint32_t Initialize(){return remote.InitializeIdentityTest(target);}
+                        std::uint32_t Scan(){
+#ifdef ARMODULE_NATIVE_PEER_C1
+                            return remote.PrepareKnownReconnect(Now(),last.deadline_boot_ms);
+#else
+                            return remote.StartLinkOnlyScan(Now());
+#endif
+                        }
+                        bool Checkpoint(armodule::ArmStage stage,std::uint32_t result,
+                            const amazon_remote::CaptureLeaseWire &wire,bool valid) {
+                            char line[256]{};std::snprintf(line,sizeof line,
+                                "ARM_STARTUP stage=%s Result=%08lx lease_valid=%u lease_state=%lu lease_now=%llu lease_deadline=%llu now=%llu",
+                                armodule::ArmStageName(stage),static_cast<unsigned long>(result),valid,
+                                static_cast<unsigned long>(wire.state),static_cast<unsigned long long>(wire.now_boot_ms),
+                                static_cast<unsigned long long>(wire.deadline_boot_ms),static_cast<unsigned long long>(Now()));Log(line);
+                            if(result) {
+                                armodule::ArmDiagnostic record{};record.stage=unsigned(stage);record.result=result;
+                                record.instance=instance;record.now_ms=Now();record.lease_valid=valid;
+                                if(valid){record.lease_state=wire.state;record.lease_now_ms=wire.now_boot_ms;record.lease_deadline_ms=wire.deadline_boot_ms;}
+                                record.checksum=armodule::ArmChecksum(record);
+                                if(!armodule::ValidArmDiagnostic(record) ||
+                                   !armodule::Publish(armodule::ArmDiagnosticTemp,armodule::ArmDiagnosticPath,record))
+                                    Log("ARM_STARTUP_FAILURE_RECORD_NOT_SAVED: original result retained; no retry; UI must remain generic");
+                            }
+                            return log_healthy;
+                        }
+                    } arm_backend{mc,lease,remote,target,capture_owned,instance};
+                    rc=armodule::RunArmStartup(arm_backend);
+                }
+                ResultLog("ARM startup chain complete",rc);
+                if(R_SUCCEEDED(rc) && !log_healthy)rc=Invalid();
+#else
                 if (R_SUCCEEDED(rc)) rc = ReadLease(mc, lease);
                 if (R_SUCCEEDED(rc) && lease.state != unsigned(amazon_remote::CaptureLeaseState::Available)) rc = Invalid();
                 if (R_SUCCEEDED(rc)) { rc = serviceDispatch(&mc, 65001); capture_owned = R_SUCCEEDED(rc); }
@@ -385,25 +779,59 @@ int main(int, char **) {
                 if (R_SUCCEEDED(rc)) rc = remote.InitializeIdentityTest(target);
                 ResultLog("explicit bounded Bluetooth session initialization", rc);
                 if (R_SUCCEEDED(rc) && !log_healthy) rc = Invalid();
-                if (R_SUCCEEDED(rc)) rc = remote.StartLinkOnlyScan(Now());
+                if (R_SUCCEEDED(rc)) rc =
+#if defined(ARMODULE_KNOWN_RECONNECT_CHECK) || defined(ARMODULE_NATIVE_PEER_C1)
+                    remote.PrepareKnownReconnect(Now(),lease.deadline_boot_ms);
+#else
+                    remote.StartLinkOnlyScan(Now());
+#endif
+#endif
                 if (R_FAILED(rc)) stop(rc);
             } else if (command.kind == unsigned(armodule::CommandKind::Link)) {
                 amazon_remote::SightingWire wire{};
                 if (sighting(wire) && policy.Link(true)) {
-                    rc = remote.ConfirmObservedLink(wire, Now(), lease.deadline_boot_ms);
+                    rc =
+#if defined(ARMODULE_KNOWN_RECONNECT_CHECK) || defined(ARMODULE_NATIVE_PEER_C1)
+                        remote.ConfirmKnownReconnect(Now(), lease.deadline_boot_ms);
+#else
+                        remote.ConfirmObservedLink(wire, Now(), lease.deadline_boot_ms);
+#endif
                     if (R_FAILED(rc) || !remote.LinkAttempted()) stop(R_FAILED(rc) ? rc : Invalid());
                 } // Not-ready request is discarded, never queued.
             }
         }
-        if (policy.Active()) {
+#ifdef ARMODULE_RECONNECT_CHECK
+        if (policy.Get()==armodule::State::Stopping) {
+            const auto disconnect_result=remote.PollOwnedDisconnect(Now());
+            if (remote.GetDisconnectState()!=amazon_remote::DisconnectState::Waiting)
+                finish_stop(disconnect_result);
+        }
+#endif
+        if (policy.Active()
+#ifdef ARMODULE_WAKE_A3
+            && !sleep_edge_wait
+#endif
+        ) {
             rc = remote.Poll(Now());
 #ifdef ARMODULE_NAV14
             capture_connections(false);
+#endif
+#ifdef ARMODULE_WAKE_A3
+            if(R_FAILED(rc) && log_healthy && policy.Get()==armodule::State::Ready && remote.CompletedLinkLost()) {
+                // Native link loss may precede PSC sleep by one loop. Hold NO
+                // output and do not reconnect; require a real sleep event.
+                sleep_edge_wait=Now();const auto pad_rc=detach_pad();
+                if(pad_rc)stop(pad_rc);
+                else Log("WAKE_A3_LINK_LOST: output detached; waiting at most1500ms for actual PSC sleep, otherwise terminal stop");
+            } else
 #endif
             if (R_FAILED(rc) || !log_healthy) stop(R_FAILED(rc) ? rc : Invalid());
             else if (remote.Ready()) {
                 if (policy.Get() == armodule::State::Linking && policy.Ready()) {
                     rc = controller.Start(); ResultLog("attach owned HDLS pad (visible navigation validation pending)", rc);
+#ifdef ARMODULE_LATENCY_A6
+                    LogTimingSummary("attached");
+#endif
                     const auto hdls_trace=backend.Trace(instance,Now());
                     if (!armodule::Publish(armodule::HdlsTemp,armodule::HdlsPath,hdls_trace) && !rc) rc=Invalid();
                     if (R_FAILED(rc)) stop(rc);
@@ -428,11 +856,28 @@ int main(int, char **) {
 #endif
                         if (R_FAILED(rc)) stop(rc);
                         else if (controller.SuccessfulWrites() != before) {
+#ifdef ARMODULE_LATENCY_A6
+                            const auto ack_ms=Now();
+                            const auto &timing=remote.InputTiming();
+                            char line[320]{};
+                            const bool valid=timing.sequence && timing.received_ms && timing.received_ms<=timing.decoded_ms &&
+                                timing.decoded_ms<=ack_ms && timing.buttons==remote.Buttons() && !controller.WaitingRelease() &&
+                                controller.LastAcknowledgedButtons()==armodule::MapButtons(remote.Buttons()) &&
+                                (timing.sequence!=last_timed_input_sequence || timing.received_ms!=last_timed_input_received);
+                            if(valid){last_timed_input_sequence=timing.sequence;last_timed_input_received=timing.received_ms;}
+                            std::snprintf(line,sizeof line,"HDLS ACK remote=%08lx mapped=%016llx writes=%llu input_seq=%llu received_ms=%llu decoded_ms=%llu ack_ms=%llu host_timing_valid=%u; host_event_to_output_only_not_physical_press",
+                                static_cast<unsigned long>(remote.Buttons()),
+                                static_cast<unsigned long long>(controller.LastAcknowledgedButtons()),
+                                static_cast<unsigned long long>(controller.SuccessfulWrites()),
+                                static_cast<unsigned long long>(timing.sequence),static_cast<unsigned long long>(timing.received_ms),
+                                static_cast<unsigned long long>(timing.decoded_ms),static_cast<unsigned long long>(ack_ms),valid);
+#else
                             char line[160]{};
                             std::snprintf(line, sizeof line, "HDLS ACK remote=%08lx mapped=%016llx writes=%llu; visible navigation unverified",
                                 static_cast<unsigned long>(remote.Buttons()),
                                 static_cast<unsigned long long>(controller.LastAcknowledgedButtons()),
                                 static_cast<unsigned long long>(controller.SuccessfulWrites()));
+#endif
                             Log(line);
                             if (!log_healthy) stop(Invalid());
                         }
@@ -445,6 +890,11 @@ int main(int, char **) {
         }
 #ifdef ARMODULE_NAV15
         if(!publish_enrollment()){stop(Invalid());break;}
+#endif
+#ifdef ARMODULE_WAKE_A3
+        if(sleep_edge_wait && (Now()<sleep_edge_wait || Now()-sleep_edge_wait>=1500)){
+            sleep_edge_wait=0;stop(Invalid());
+        }
 #endif
 #ifdef ARMODULE_NAV12
         if (status_schedule.Due(Now())) {
@@ -462,6 +912,15 @@ int main(int, char **) {
 #if defined(ARMODULE_NAV10) || defined(ARMODULE_NAV11) || defined(ARMODULE_NAV12)
             status.reserved=armodule::StatusChecksum(status);
             const auto status_rc=status_writer.WriteRecord(startup_fs,status);
+#ifdef ARMODULE_AUTOMATIC_A2
+            if(status_writer.Archived() && !status_archive_logged) {
+                char detail[256]{};std::snprintf(detail,sizeof detail,
+                    "AUTO_A2_STATUS_ARCHIVED previous_instance=%llu current_instance=%llu path=%s; readback_verified=1",
+                    static_cast<unsigned long long>(status_writer.PreviousInstance()),
+                    static_cast<unsigned long long>(instance),status_writer.ArchivePath());
+                Log(detail);status_archive_logged=true;
+            }
+#endif
             const bool published=R_SUCCEEDED(status_rc);
             if (!published) {
                 if (!status_error_since) status_error_since=Now();
@@ -479,7 +938,12 @@ int main(int, char **) {
             if (published) idle_health.Observe(status,Now());
             else if (status_rc!=0xe02 || status_writer.permanent) idle_health.Reset();
             if (idle_health.Ready(Now()) && !idle_pass_logged) {
-                Log("IDLE_HEALTH_PASSED:15s distinct fresh status publications; NO Bluetooth activity yet");idle_pass_logged=true;
+#ifdef ARMODULE_WAKE_A3
+                Log("WAKE_A3_HEALTH_READY:2s/four distinct successful status records; all connection preflights retained");
+#else
+                Log("IDLE_HEALTH_PASSED:15s distinct fresh status publications; NO Bluetooth activity yet");
+#endif
+                idle_pass_logged=true;
             }
             if (status_schedule.Complete(status_rc,status_writer.permanent,Now())) {
                 Checkpoint(armodule::StartupStage::Status,status_rc);stop(status_rc);break;

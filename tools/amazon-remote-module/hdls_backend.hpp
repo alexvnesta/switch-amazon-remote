@@ -13,6 +13,7 @@ static_assert(HidNpadButton_A == (1ull<<0) && HidNpadButton_B == (1ull<<1));
 static_assert(HidNpadButton_Plus == (1ull<<10) && HidNpadButton_Left == (1ull<<12));
 static_assert(HidNpadButton_Up == (1ull<<13) && HidNpadButton_Right == (1ull<<14));
 static_assert(HidNpadButton_Down == (1ull<<15) && HiddbgNpadButton_Home == (1ull<<18));
+static_assert(HidDeviceType_FullKey15 == 15 && HidNpadInterfaceType_USB == 3);
 class HdlsBackend {
 public:
     using Logger=void (*)(const char *);

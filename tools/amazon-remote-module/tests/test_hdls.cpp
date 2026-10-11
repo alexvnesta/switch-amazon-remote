@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "../hdls_backend.hpp"
 #include "../kernel_heap.hpp"
+#include "../../../mc_mitm/source/amazon_remote/k7q3m7_descriptor.hpp"
 #include <cassert>
 #include <vector>
 #include <cstdio>
@@ -69,7 +70,41 @@ void hiddbgExit() { Call(7); }
 Result hiddbgDumpHdlsStates(HiddbgHdlsSessionId session,HiddbgHdlsStateList *out) {
     assert(session.id==17);*out=owned_snapshot;return snapshot_result;
 }
+void HomeReportFlow() {
+    Reset(0);tick=100;snapshot_result=0;owned_snapshot={};
+    owned_snapshot.total_entries=1;owned_snapshot.entries[0].handle.handle=29;
+    amazon_remote::RemoteDecoder decoder;
+    assert(decoder.Configure(amazon_remote::K7q3m7Descriptor,sizeof amazon_remote::K7q3m7Descriptor));
+    armodule::HdlsBackend backend(Allocate,Free);armodule::OwnedController controller(backend);
+    assert(!controller.Start() && outputs.back()==0);
+    const u8 home[]{0x23,2,0,0},consumer_neutral[]{0,0,0,0},keyboard_neutral[]{0,0,0},up[]{0x52,0,0},select[]{0x58,0,0};
+    const auto send=[&](u8 id,const u8 *bytes,std::size_t size) {
+        const auto result=decoder.Ingest(id,bytes,size);
+        assert(result==amazon_remote::Update::Changed || result==amazon_remote::Update::Unchanged);
+        tick+=20;assert(!controller.UpdateMaintained(decoder.Buttons(),tick));
+    };
+    send(2,home,sizeof home);assert(outputs.back()==HiddbgNpadButton_Home);
+    const auto n=outputs.size();
+    send(2,home,sizeof home);send(1,keyboard_neutral,sizeof keyboard_neutral);
+    assert(outputs.size()==n && decoder.Buttons()==amazon_remote::Home);
+    send(1,up,sizeof up);assert(outputs.back()==(HiddbgNpadButton_Home|HidNpadButton_Up));
+    send(1,keyboard_neutral,sizeof keyboard_neutral);assert(outputs.back()==HiddbgNpadButton_Home);
+    send(2,consumer_neutral,sizeof consumer_neutral);assert(outputs.back()==0);
+    // Three separate physical reports generate three edges, not a macro or a
+    // synthetic repeat. This checks output shape, NOT acceptance by a lock UI.
+    const auto before_taps=outputs.size();
+    for(unsigned i=0;i<3;++i){send(2,home,sizeof home);send(2,consumer_neutral,sizeof consumer_neutral);}
+    assert(outputs.size()==before_taps+6);
+    for(unsigned i=0;i<6;++i)assert(outputs[before_taps+i]==(i%2?0:HiddbgNpadButton_Home));
+    for(unsigned i=0;i<3;++i){send(1,select,sizeof select);assert(outputs.back()==HidNpadButton_A);send(1,keyboard_neutral,sizeof keyboard_neutral);assert(outputs.back()==0);}
+    send(2,home,sizeof home);assert(controller.LastAcknowledgedButtons()==HiddbgNpadButton_Home);
+    assert(!controller.Stop() && outputs.back()==0 && controller.LastAcknowledgedButtons()==0);
+    assert(!controller.Attached() && live.empty());
+    decoder.Disconnect();assert(!decoder.Buttons());
+    std::puts("PASS captured Home report to actual HDLS backend: press/release, duplicate, independent reports, three replayed tap sequences, Select/A taps and held-Home cleanup; synthetic SDK, no screen-unlock proof");
+}
 int main() {
+    HomeReportFlow();
     for (unsigned failure=0; failure<=7; ++failure) {
         Reset(failure);
         armodule::HdlsBackend backend(Allocate,Free); armodule::OwnedController controller(backend);

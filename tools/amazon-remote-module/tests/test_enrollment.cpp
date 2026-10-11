@@ -64,6 +64,14 @@ int main() {
         struct stat st{};assert(::stat(path.c_str(),&st) && errno==ENOENT);
     }
     auto corrupt=r;++corrupt.checksum;assert(!armodule::PersistEnrollmentIntent(path.c_str(),corrupt));
+#ifdef ARMODULE_NATIVE_OWNER
+    assert(armodule::SaveNativeExclusive(path.c_str(),r));
+    assert(!armodule::SaveNativeExclusive(path.c_str(),r));assert(!::unlink(path.c_str()));
+    for(unsigned variant=0;variant<3;++variant){
+        assert(!armodule::SaveNativeExclusive(path.c_str(),r,variant==0?ShortWrite:variant==1?WrongWrite: ::write,variant==2?SyncError: ::fsync));
+        assert(!armodule::SaveNativeExclusive(path.c_str(),r));assert(!::unlink(path.c_str()));
+    }
+#endif
     assert(!armodule::PersistEnrollmentIntent((std::string(directory)+"/missing/intent.bin").c_str(),r));
     armodule::Command c{};c.kind=5;c.instance=42;c.issued_ms=1000;c.sequence=2;
 #ifdef ARMODULE_NAV15
@@ -73,7 +81,15 @@ int main() {
     assert(!armodule::ValidCommand(c,42,1,3001));
     assert(!armodule::ValidCommand(c,42,1,999));
     c.reserved=1;assert(!armodule::ValidCommand(c,42,1,1001));
-    c.reserved=0;c.kind=6;assert(!armodule::ValidCommand(c,42,1,1001));
+    c.reserved=0;c.kind=6;
+#ifdef ARMODULE_NATIVE_OWNER
+    assert(armodule::ValidCommand(c,42,1,1001));
+    assert(!armodule::ValidCommand(c,42,2,1001));assert(!armodule::ValidCommand(c,43,1,1001));
+    assert(!armodule::ValidCommand(c,42,1,3001));assert(!armodule::ValidCommand(c,42,1,999));
+    c.kind=7;assert(!armodule::ValidCommand(c,42,1,1001));
+#else
+    assert(!armodule::ValidCommand(c,42,1,1001));
+#endif
 #else
     assert(!armodule::ValidCommand(c,42,1,1001)); // older variants cannot enroll
 #endif

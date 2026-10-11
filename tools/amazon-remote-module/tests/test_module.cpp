@@ -116,7 +116,9 @@ void Protocol() {
     assert(ValidCommand(c,100,0,c.issued_ms) && !ValidCommand(c,100,0,0));
     Status s{}; s.instance = 100; s.now_ms = 200;
     assert(FreshStatus(s,200) && !FreshStatus(s,199) && !FreshStatus(s,2201));
-    s.state = 6; assert(!FreshStatus(s,200)); s.state = 0;
+    s.state = unsigned(State::Stopping); assert(FreshStatus(s,200));
+    s.state = unsigned(State::Disconnected); assert(FreshStatus(s,200));
+    s.state = 8; assert(!FreshStatus(s,200)); s.state = 0;
     s.link_ready = 2; assert(!FreshStatus(s,200)); s.link_ready = 0;
     s.output_attached = 2; assert(!FreshStatus(s,200)); s.output_attached = 0;
     s.controller_check = 3; assert(!FreshStatus(s,200)); s.controller_check = 0;

@@ -41,11 +41,14 @@ int main() {
       assert(!c.UpdateMaintained(0,180) && !c.WaitingRelease());
       assert(!c.UpdateMaintained(Down,200) && b.writes.back()==(1ull<<15));assert(!c.Stop()); }
     // A key held when the handle disappears is neutralized, never replayed.
-    { Pad b;armodule::OwnedController c(b);assert(!c.Start());
-      assert(!c.UpdateMaintained(Confirm,100));b.present=false;
-      assert(!c.UpdateMaintained(Confirm,360) && c.WaitingRelease() && b.writes.back()==0);
-      assert(!c.UpdateMaintained(Confirm,380) && b.writes.back()==0);
-      assert(!c.UpdateMaintained(0,400));assert(!c.UpdateMaintained(Back,420));assert(!c.Stop()); }
+    for(std::uint32_t held:{std::uint32_t(Confirm),std::uint32_t(Home),std::uint32_t(Confirm|Home)}) {
+      Pad b;armodule::OwnedController c(b);assert(!c.Start());
+      assert(!c.UpdateMaintained(held,100) && b.writes.back()==armodule::MapButtons(held));b.present=false;
+      assert(!c.UpdateMaintained(held,360) && c.WaitingRelease() && b.writes.back()==0);
+      assert(!c.UpdateMaintained(held,380) && b.writes.back()==0);
+      assert(!c.UpdateMaintained(0,400));
+      assert(!c.UpdateMaintained(Home,420) && b.writes.back()==(1ull<<18));
+      assert(!c.Stop() && b.writes.back()==0); }
     // Second disappearance stops; zero writes/detaches to confirmed stale handle.
     { Pad b;armodule::OwnedController c(b);assert(!c.Start());
       b.present=false;assert(!c.UpdateMaintained(0,100));
@@ -77,5 +80,19 @@ int main() {
         Pad b;armodule::OwnedController c(b);assert(!c.Start());
         assert(!c.UpdateMaintained(0,100));assert(c.UpdateMaintained(0,now));assert(b.attaches==1);
     }
+#ifdef ARMODULE_WAKE_A3
+    { Pad b;armodule::OwnedController c(b);
+      for(unsigned session=0;session<8;++session){
+          assert(c.PrepareNextSession() && !c.Start() && !c.PrepareNextSession());
+          const auto button=session%2?Home:Down;
+          assert(!c.UpdateMaintained(button,1000+session*1000));
+          assert(c.LastAcknowledgedButtons()==armodule::MapButtons(button));
+          assert(!c.Stop() && !c.LastAcknowledgedButtons() && !c.Attached());
+      }
+      assert(b.attaches==8 && b.detaches==8 && b.releases==8 && b.closes==8);
+    }
+    { Pad b;armodule::OwnedController c(b);assert(!c.Start());b.fail_set=2;
+      assert(c.UpdateMaintained(Down,100) && !c.PrepareNextSession()); }
+#endif
     std::puts("PASS owned-HDLS lifetime: long idle, periodic/pre-write presence, one neutral replacement, release gate, second disappearance, ambiguous Set failure, every recovery failure and clock guards. MODEL ONLY.");
 }

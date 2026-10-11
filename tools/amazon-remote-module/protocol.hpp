@@ -1,6 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #pragma once
+#if defined(ARMODULE_AUTOMATIC_A2) && !defined(ARMODULE_AUTOMATIC_A1)
+#error A2 is a storage repair of the A1 automatic variant
+#endif
+#if defined(ARMODULE_AUTOMATIC_A1) && (!defined(ARMODULE_NATIVE_HCI_C2) || !defined(ARMODULE_RECONNECT_CHECK))
+#error Automatic A1 requires the saved-only C2 companion contract
+#endif
+#if defined(ARMODULE_DISCONNECT_CHECK) && !defined(ARMODULE_STARTUP_TRACE)
+#error Disconnect check requires the reviewed startup/scan path
+#endif
+#if defined(ARMODULE_DISCOVERY_TRACE) && !defined(ARMODULE_RECONNECT_CHECK)
+#error Discovery trace requires reconnect-only policy
+#endif
+#if defined(ARMODULE_RECONNECT_CHECK) && (!defined(ARMODULE_NAV17) || defined(ARMODULE_NATIVE_OWNER))
+#error Reconnect check requires Navigation17 without native bond request support
+#endif
 #include <cstdint>
+#include <cstddef>
 #include <type_traits>
 #include "navigation15_namespace.hpp"
 
@@ -128,9 +144,14 @@ enum class CommandKind : std::uint32_t { Arm = 1, Link = 2, Stop = 3, CheckContr
 #ifdef ARMODULE_NAV15
     , Enroll = 5
 #endif
+#ifdef ARMODULE_NATIVE_OWNER
+    , NativeBond = 6
+#endif
 };
 enum class ControllerCheck : std::uint32_t { NotRun, Passed, Failed };
-enum class State : std::uint32_t { Idle, Scanning, Linking, Ready, Stopped, Suspended };
+// Appended without changing existing numeric values or wire layout. Older
+// frontends reject the unknown state instead of acknowledging Stop early.
+enum class State : std::uint32_t { Idle, Scanning, Linking, Ready, Stopped, Suspended, Stopping, Disconnected };
 struct Command {
     std::uint32_t magic{Magic}, version{Version}, kind{}, reserved{};
     std::uint64_t instance{}, issued_ms{}, sequence{};
@@ -154,7 +175,13 @@ inline bool ValidCommand(const Command &c, std::uint64_t instance,
         std::uint64_t last_sequence, std::uint64_t now) {
     return c.magic == Magic && c.version == Version && !c.reserved && instance && c.instance == instance &&
         c.kind >= unsigned(CommandKind::Arm) && c.kind <=
-#ifdef ARMODULE_NAV15
+#ifdef ARMODULE_AUTOMATIC_A1
+        unsigned(CommandKind::Stop) && c.kind == unsigned(CommandKind::Stop) &&
+#elif defined(ARMODULE_RECONNECT_CHECK)
+        unsigned(CommandKind::CheckController) &&
+#elif defined(ARMODULE_NATIVE_OWNER)
+        unsigned(CommandKind::NativeBond) &&
+#elif defined(ARMODULE_NAV15)
         unsigned(CommandKind::Enroll) &&
 #else
         unsigned(CommandKind::CheckController) &&
@@ -164,7 +191,7 @@ inline bool ValidCommand(const Command &c, std::uint64_t instance,
 inline bool FreshStatus(const Status &s, std::uint64_t now) {
     return s.magic == Magic && s.version == Version &&
         (Version==3?s.reserved==StatusChecksum(s):!s.reserved) && s.instance && s.now_ms &&
-        s.state <= unsigned(State::Suspended) && s.link_ready <= 1 && s.output_attached <= 1 &&
+        s.state <= unsigned(State::Disconnected) && s.link_ready <= 1 && s.output_attached <= 1 &&
         s.controller_check <= unsigned(ControllerCheck::Failed) &&
         now >= s.now_ms && now-s.now_ms <= 2000;
 }
@@ -189,8 +216,20 @@ public:
         state_ = State::Ready; return true;
     }
     void Stop() { state_ = State::Stopped; consumed_ = true; }
+    // Presentation of confirmed owned-link absence, not permission to rearm.
+    void StopDisconnected() { state_ = State::Disconnected; consumed_ = true; }
+    bool BeginStop() {
+        if (state_ == State::Stopped || state_ == State::Suspended || state_ == State::Stopping || state_ == State::Disconnected) return false;
+        state_ = State::Stopping; consumed_ = true; return true;
+    }
     void Suspend() { state_ = State::Suspended; consumed_ = true; }
     void Resume() { if (state_ == State::Suspended) state_ = State::Stopped; }
+#ifdef ARMODULE_WAKE_A3
+    bool ResumeVerifiedSleep() {
+        if(state_!=State::Suspended)return false;
+        state_=State::Idle;consumed_=false;return true;
+    }
+#endif
     State Get() const { return state_; }
     bool Active() const { return state_ == State::Scanning || state_ == State::Linking || state_ == State::Ready; }
 private:

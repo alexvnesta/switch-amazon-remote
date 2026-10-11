@@ -117,6 +117,12 @@ public:
     std::uint64_t LastAcknowledgedButtons() const { return acknowledged_; }
     std::uint64_t SuccessfulWrites() const { return writes_; }
     std::uint32_t CleanupError() const { return cleanup_error_; }
+#ifdef ARMODULE_WAKE_A3
+    bool PrepareNextSession() {
+        if(open_ || session_ || device_ || failed_ || cleanup_error_ || acknowledged_)return false;
+        recovered_=release_gate_=false;last_check_=0;return true;
+    }
+#endif
 private:
     std::uint32_t Write(std::uint64_t buttons) {
         const auto rc = backend_.Set(buttons);

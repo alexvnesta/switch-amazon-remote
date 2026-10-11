@@ -3,7 +3,15 @@
 #include <switch.h>
 #include "protocol.hpp"
 namespace armodule {
-// Distinct fresh, successful IDLE snapshots from one instance for15seconds.
+#ifdef ARMODULE_WAKE_A3
+inline constexpr std::uint64_t IdleHealthMinimumMs = 2000;
+inline constexpr unsigned IdleHealthMinimumSamples = 4;
+#else
+inline constexpr std::uint64_t IdleHealthMinimumMs = 15000;
+inline constexpr unsigned IdleHealthMinimumSamples = 20;
+#endif
+// Distinct fresh, successful IDLE snapshots from one instance. A3 uses a
+// short readiness qualification; historical variants keep the diagnostic soak.
 // Shared by publisher and UI; loss, errors or clock/instance changes restart it.
 class IdleHealth {
     std::uint64_t instance_{},first_{},last_{};unsigned samples_{};
@@ -15,7 +23,7 @@ public:
         if (!first_) { instance_=s.instance;first_=s.now_ms; }
         if (s.now_ms!=last_) { last_=s.now_ms;if(samples_<1000)++samples_; }
     }
-    bool Ready(std::uint64_t now) const { return first_ && last_>=first_ && now>=last_ && now-last_<=2000 && last_-first_>=15000 && samples_>=20; }
+    bool Ready(std::uint64_t now) const { return first_ && last_>=first_ && now>=last_ && now-last_<=2000 && last_-first_>=IdleHealthMinimumMs && samples_>=IdleHealthMinimumSamples; }
     unsigned Seconds() const { return last_>=first_ && first_?unsigned((last_-first_)/1000):0; }
 };
 // UI still handles buttons at50Hz, but never opens status more than4Hz. Cached

@@ -12,7 +12,8 @@ inline constexpr unsigned KernelError_InvalidMemoryState=106;
 inline constexpr std::uint64_t HidNpadButton_A=1ull<<0, HidNpadButton_B=1ull<<1,
     HidNpadButton_Plus=1ull<<10, HidNpadButton_Left=1ull<<12, HidNpadButton_Up=1ull<<13,
     HidNpadButton_Right=1ull<<14, HidNpadButton_Down=1ull<<15, HiddbgNpadButton_Home=1ull<<18;
-inline constexpr unsigned HidDeviceType_FullKey15=3, HidNpadInterfaceType_USB=1;
+// Match public libnx values; keep the real-SDK assertions in hdls_backend.hpp.
+inline constexpr unsigned HidDeviceType_FullKey15=15, HidNpadInterfaceType_USB=3;
 struct HiddbgHdlsSessionId { std::uint64_t id{}; };
 struct HiddbgHdlsHandle { std::uint64_t handle{}; };
 struct HiddbgHdlsDeviceInfo {
@@ -37,10 +38,11 @@ Result hiddbgReleaseHdlsWorkBuffer(HiddbgHdlsSessionId);
 void hiddbgExit();
 using s64 = std::int64_t;
 struct FsFileSystem {};
-struct FsFile {};
+struct FsFile { unsigned test_handle{}; };
 inline constexpr unsigned FsOpenMode_Read=1,FsOpenMode_Write = 2, FsWriteOption_Flush = 1;
 Result fsFsOpenFile(FsFileSystem *, const char *, unsigned, FsFile *);
 Result fsFsCreateFile(FsFileSystem *, const char *, s64, unsigned);
+Result fsFsRenameFile(FsFileSystem *, const char *, const char *);
 Result fsFileGetSize(FsFile *, s64 *);
 Result fsFileWrite(FsFile *, s64, const void *, std::uint64_t, unsigned);
 Result fsFileRead(FsFile *,s64,void *,std::uint64_t,unsigned,std::uint64_t *);

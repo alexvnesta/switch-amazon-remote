@@ -6,8 +6,16 @@
 #include <string_view>
 namespace {
 #ifdef ARMODULE_NAV17
+#ifdef ARMODULE_NATIVE_HCI_C2
+constexpr char ExpectedDirectory[]="sdmc:/config/amazon-remote-hci-c2";
+constexpr char ExpectedStartup[]="/config/amazon-remote-hci-c2/startup.bin";
+#elif defined(ARMODULE_NATIVE_PEER_C1)
+constexpr char ExpectedDirectory[]="sdmc:/config/amazon-remote-peer-c1";
+constexpr char ExpectedStartup[]="/config/amazon-remote-peer-c1/startup.bin";
+#else
 constexpr char ExpectedDirectory[]="sdmc:/config/amazon-remote-nav17";
 constexpr char ExpectedStartup[]="/config/amazon-remote-nav17/startup.bin";
+#endif
 constexpr auto ExpectedId=0x010000000000a4d9ULL;
 constexpr unsigned ExpectedQueries=9,ExpectedMagic=0x41524c3f;
 constexpr char BinaryDirectory[]="sdmc:/atmosphere/contents/010000000000a4d9";
