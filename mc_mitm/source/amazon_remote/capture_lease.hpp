@@ -9,7 +9,7 @@
 namespace amazon_remote {
 // Unavailable is reserved for an adapter whose module configuration disables
 // capture. The lease itself returns only Available/Active/Expired/Ended.
-enum class CaptureLeaseState : std::uint32_t { Available = 0, Active = 1, Expired = 2, Ended = 3, Unavailable = 4 };
+enum class CaptureLeaseState : std::uint32_t { Available = 0, Active = 1, Expired = 2, Ended = 3, Unavailable = 4, PowerPaused = 5 };
 inline constexpr std::uint32_t CaptureLeaseMagic = 0x41524c53u, CaptureLeaseVersion = 1;
 struct CaptureLeaseWire {
     std::uint32_t magic{}, version{}, state{}, reserved{};
@@ -42,6 +42,25 @@ public:
         return state_.compare_exchange_strong(expected, Live, std::memory_order_acq_rel);
     }
     void End() { state_.exchange(Ended, std::memory_order_acq_rel); }
+#ifdef ARMODULE_WAKE_A3
+    // Called only by the serialized companion wake admission, after exact
+    // owner/epoch and fully-awake absent-link checks. Not a general retry API.
+    bool PermitAfterSleep() {
+        auto expected=Ended;
+        return state_.compare_exchange_strong(expected,Available,std::memory_order_acq_rel);
+    }
+#endif
+    // Only a never-armed lease can pause without consuming its opportunity.
+    // Racing Arm wins or loses the same CAS; Arming/Live/Expired are terminal.
+    bool PauseUnusedForPower() {
+        auto expected = Available;
+        if (state_.compare_exchange_strong(expected, PowerPaused, std::memory_order_acq_rel)) return true;
+        return expected == PowerPaused;
+    }
+    bool ResumeUnusedAfterPower() {
+        auto expected = PowerPaused;
+        return state_.compare_exchange_strong(expected, Available, std::memory_order_acq_rel);
+    }
     bool Active(std::uint64_t now_boot_ms) {
         const auto view = ReadStatus(now_boot_ms);
         if (view.state == static_cast<std::uint32_t>(CaptureLeaseState::Expired) &&
@@ -68,6 +87,7 @@ public:
             const auto deadline = (before == Live || before == Expired) ? deadline_.load(std::memory_order_acquire) : 0;
             if (state_.load(std::memory_order_acquire) != before) continue;
             if (before == Available || before == Arming) wire.state = static_cast<std::uint32_t>(CaptureLeaseState::Available);
+            else if (before == PowerPaused) wire.state = static_cast<std::uint32_t>(CaptureLeaseState::PowerPaused);
             else if (before == Ended) wire.state = static_cast<std::uint32_t>(CaptureLeaseState::Ended);
             else if (before == Live || before == Expired) {
                 wire.deadline_boot_ms = deadline;
@@ -83,7 +103,7 @@ public:
         return static_cast<CaptureLeaseState>(ReadStatus(now_boot_ms).state);
     }
 private:
-    static constexpr std::uint32_t Available = 0, Live = 1, Expired = 2, Ended = 3, Arming = 4;
+    static constexpr std::uint32_t Available = 0, Live = 1, Expired = 2, Ended = 3, Arming = 4, PowerPaused = 5;
     std::atomic<std::uint32_t> state_{Available};
     std::atomic<std::uint64_t> deadline_{0};
 };

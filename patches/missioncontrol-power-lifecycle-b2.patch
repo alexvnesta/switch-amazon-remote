@@ -1,0 +1,48 @@
+--- a/mc_mitm/source/mcmitm_main.cpp
++++ b/mc_mitm/source/mcmitm_main.cpp
+@@ -120,24 +120,30 @@
+         // Loop events until shutdown signal is received
+         bool shutdown = false;
++        static_assert(psc::PmState_FullAwake == 0 && psc::PmState_MinimumAwake == 1 &&
++            psc::PmState_SleepReady == 2 && psc::PmState_EssentialServicesSleepReady == 3 &&
++            psc::PmState_EssentialServicesAwake == 4 && psc::PmState_ShutdownReady == 5 &&
++            psc::PmState_Unknown == 6);
++        static_assert(sizeof(pm_flags) == sizeof(u32));
+         while (!shutdown) {
+             auto signalled_holder = os::WaitAny(&wait_manager);
+             switch (os::GetMultiWaitHolderUserData(signalled_holder)) {
+-                case 0:
++                case 0: {
+                     pm_module.GetEventPointer()->Clear();
+-                    if (R_SUCCEEDED(pm_module.GetRequest(&pm_state, &pm_flags))) {
+-                        switch (pm_state) {
+-                            case psc::PmState_ShutdownReady:
+-                                shutdown = true;
+-                                [[fallthrough]];
+-                            case psc::PmState_SleepReady:
+-                                mc::amazon_observer::Suspend(shutdown);
+-                                break;
+-                            default:
+-                                break;
+-                        }
+-                    }
+-
+-                    R_ABORT_UNLESS(pm_module.Acknowledge(pm_state, ResultSuccess()));
++                    pm_state = psc::PmState_Unknown;
++                    pm_flags = {};
++                    const auto request_result = pm_module.GetRequest(&pm_state, &pm_flags);
++                    u32 raw_flags{};
++                    std::memcpy(&raw_flags, &pm_flags, sizeof raw_flags);
++                    mc::amazon_observer::PowerRequest(static_cast<u32>(pm_state), raw_flags,
++                        request_result.GetValue());
++                    // Never acknowledge stale/uninitialized state after a failed getter.
++                    // The remote test is now terminal; retain metadata for triage.
++                    if (R_FAILED(request_result)) break;
++                    shutdown = pm_state == psc::PmState_ShutdownReady;
++                    const auto ack_result = pm_module.Acknowledge(pm_state, ResultSuccess());
++                    mc::amazon_observer::PowerAcknowledge(ack_result.GetValue());
++                    R_ABORT_UNLESS(ack_result);
+                     break;
++                }
+ 
+                 case 1:

@@ -1,0 +1,37 @@
+--- a/mc_mitm/source/mc/mc_service.hpp
++++ b/mc_mitm/source/mc/mc_service.hpp
+@@ -39,6 +39,8 @@
+     AMS_SF_METHOD_INFO(C, H, 65010, Result, BeginCentralBond, (sf::ClientProcessId pid, ::amazon_remote::central_bond::Begin request), (pid, request)) \
+     AMS_SF_METHOD_INFO(C, H, 65011, Result, GetCentralBondStatus, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+     AMS_SF_METHOD_INFO(C, H, 65012, Result, CancelCentralBond, (sf::ClientProcessId pid), (pid)) \
++    AMS_SF_METHOD_INFO(C, H, 65013, Result, PrepareSavedPeer, (sf::ClientProcessId pid, ::amazon_remote::central_bond::PreparePeer request), (pid, request)) \
++    AMS_SF_METHOD_INFO(C, H, 65014, Result, GetSavedPeerStatus, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+ 
+ AMS_SF_DEFINE_INTERFACE(ams::mc, IMissionControlInterface, AMS_MISSION_CONTROL_INTERFACE_INFO, 0x30eba3d4)
+ 
+@@ -65,6 +67,8 @@
+             Result BeginCentralBond(sf::ClientProcessId pid, ::amazon_remote::central_bond::Begin request);
+             Result GetCentralBondStatus(const sf::OutPointerBuffer &out_buffer);
+             Result CancelCentralBond(sf::ClientProcessId pid);
++            Result PrepareSavedPeer(sf::ClientProcessId pid, ::amazon_remote::central_bond::PreparePeer request);
++            Result GetSavedPeerStatus(const sf::OutPointerBuffer &out_buffer);
+     };
+     static_assert(IsIMissionControlInterface<MissionControlService>);
+ 
+--- a/mc_mitm/source/mc/mc_service.cpp
++++ b/mc_mitm/source/mc/mc_service.cpp
+@@ -21,6 +21,14 @@
+ #include "../amazon_remote/central_bond_runtime.hpp"
+ 
+ namespace ams::mc {
++    Result MissionControlService::PrepareSavedPeer(sf::ClientProcessId pid, ::amazon_remote::central_bond::PreparePeer request) {
++        if(!central_bond_runtime::PreparePeer(pid.GetValue().value,request))return MAKERESULT(Module_Libnx,LibnxError_BadInput);
++        R_SUCCEED();
++    }
++    Result MissionControlService::GetSavedPeerStatus(const sf::OutPointerBuffer &out_buffer) {
++        if(!central_bond_runtime::ReadPeerStatus(out_buffer.GetPointer(),out_buffer.GetSize()))return MAKERESULT(Module_Libnx,LibnxError_BadInput);
++        R_SUCCEED();
++    }
+     Result MissionControlService::BeginCentralBond(sf::ClientProcessId pid, ::amazon_remote::central_bond::Begin request) {
+         if(!central_bond_runtime::Begin(pid.GetValue().value,request))return MAKERESULT(Module_Libnx,LibnxError_BadInput);
+         R_SUCCEED();

@@ -1,0 +1,39 @@
+diff --git a/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp b/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp
+--- a/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp
++++ b/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp
+@@ -24,6 +24,7 @@
+ #include "../controllers/controller_management.hpp"
+ #include "../amazon_remote/intent_trace_runtime.hpp"
+ #include "../amazon_remote/filter_correction_runtime.hpp"
++#include "../amazon_remote/lease_scan_trace_runtime.hpp"
+ #include <switch.h>
+ 
+ namespace ams::mitm::bluetooth {
+@@ -34,6 +35,9 @@
+         // The IPC server is the sole producer. Never wait for a callback or issue
+         // another driver command here. The SF sentinel forwards the ORIGINAL
+         // saved request, not reconstructed metadata, preserving driver results.
++        if(command!=57 && command!=58)
++            ams::mc::lease_scan_trace::ObserveRequest(command,m_client_info.program_id.value,
++                m_client_info.process_id.value,payload,size);
+         ams::mc::ble_intent_trace::Observe(command, m_client_info.program_id.value,
+             m_client_info.process_id.value, payload, size);
+         R_RETURN(sm::mitm::ResultShouldForwardToSession());
+@@ -44,6 +48,8 @@
+     Result BtdrvMitmService::StopBleScan() { return TraceBleIntent(56, nullptr, 0); }
+     Result BtdrvMitmService::AddBleScanFilterCondition(const sf::InPointerBuffer &buffer) {
+         u32 result{};
++        ams::mc::lease_scan_trace::ObserveRequest(57,m_client_info.program_id.value,
++            m_client_info.process_id.value,buffer.GetPointer(),buffer.GetSize());
+         if (ams::mc::amazon_filter_correction::Correct(57,m_client_info.program_id.value,
+                 m_client_info.process_id.value,buffer.GetPointer(),buffer.GetSize(),
+                 m_forward_service.get(),btdrvForwardBleFilterCondition,result)) return result;
+@@ -51,6 +57,8 @@
+     }
+     Result BtdrvMitmService::DeleteBleScanFilterCondition(const sf::InPointerBuffer &buffer) {
+         u32 result{};
++        ams::mc::lease_scan_trace::ObserveRequest(58,m_client_info.program_id.value,
++            m_client_info.process_id.value,buffer.GetPointer(),buffer.GetSize());
+         if (ams::mc::amazon_filter_correction::Correct(58,m_client_info.program_id.value,
+                 m_client_info.process_id.value,buffer.GetPointer(),buffer.GetSize(),
+                 m_forward_service.get(),btdrvForwardBleFilterCondition,result)) return result;

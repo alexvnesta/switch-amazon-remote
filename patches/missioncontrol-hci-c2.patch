@@ -1,0 +1,42 @@
+--- a/mc_mitm/system_module.mk
++++ b/mc_mitm/system_module.mk
+@@ -4,7 +4,7 @@
+ THIS_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
+ CURRENT_DIRECTORY := $(abspath $(dir $(THIS_MAKEFILE)))
+ include $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../lib/Atmosphere-libs/config/templates/stratosphere.mk
+-CXXFLAGS += -DARMODULE_CENTRAL_BOND_B1
++CXXFLAGS += -DARMODULE_CENTRAL_BOND_B1 -DARMODULE_NATIVE_PEER_C1 -DARMODULE_NATIVE_HCI_C2
+ 
+ ATMOSPHERE_SYSTEM_MODULE_TARGETS := nsp
+ 
+--- a/mc_mitm/source/mc/mc_service.hpp
++++ b/mc_mitm/source/mc/mc_service.hpp
+@@ -41,6 +41,7 @@
+     AMS_SF_METHOD_INFO(C, H, 65012, Result, CancelCentralBond, (sf::ClientProcessId pid), (pid)) \
+     AMS_SF_METHOD_INFO(C, H, 65013, Result, PrepareSavedPeer, (sf::ClientProcessId pid, ::amazon_remote::central_bond::PreparePeer request), (pid, request)) \
+     AMS_SF_METHOD_INFO(C, H, 65014, Result, GetSavedPeerStatus, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
++    AMS_SF_METHOD_INFO(C, H, 65015, Result, GetHciStatusTrace, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+ 
+ AMS_SF_DEFINE_INTERFACE(ams::mc, IMissionControlInterface, AMS_MISSION_CONTROL_INTERFACE_INFO, 0x30eba3d4)
+ 
+@@ -69,6 +70,7 @@
+             Result CancelCentralBond(sf::ClientProcessId pid);
+             Result PrepareSavedPeer(sf::ClientProcessId pid, ::amazon_remote::central_bond::PreparePeer request);
+             Result GetSavedPeerStatus(const sf::OutPointerBuffer &out_buffer);
++            Result GetHciStatusTrace(const sf::OutPointerBuffer &out_buffer);
+     };
+     static_assert(IsIMissionControlInterface<MissionControlService>);
+ 
+--- a/mc_mitm/source/mc/mc_service.cpp
++++ b/mc_mitm/source/mc/mc_service.cpp
+@@ -21,6 +21,10 @@
+ #include "../amazon_remote/central_bond_runtime.hpp"
+ 
+ namespace ams::mc {
++    Result MissionControlService::GetHciStatusTrace(const sf::OutPointerBuffer &out_buffer) {
++        if(!central_bond_runtime::ReadHciTrace(out_buffer.GetPointer(),out_buffer.GetSize()))return MAKERESULT(Module_Libnx,LibnxError_BadInput);
++        R_SUCCEED();
++    }
+     Result MissionControlService::PrepareSavedPeer(sf::ClientProcessId pid, ::amazon_remote::central_bond::PreparePeer request) {
+         if(!central_bond_runtime::PreparePeer(pid.GetValue().value,request))return MAKERESULT(Module_Libnx,LibnxError_BadInput);
+         R_SUCCEED();

@@ -1,0 +1,58 @@
+diff --git a/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_core.cpp b/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_core.cpp
+--- a/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_core.cpp
++++ b/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_core.cpp
+@@ -192,6 +192,12 @@
+         {
+             std::scoped_lock lk(g_event_info_lock);
+             R_ABORT_UNLESS(btdrvGetEventInfo(&g_event_info, sizeof(bluetooth::EventInfo), &g_current_event_type));
++            // M1 is an unsolicited diagnostic, never a blocking custom reply.
++            if (static_cast<u32>(g_current_event_type) == 0x6a) {
++                ams::mc::amazon_observer::ObserveNativeMetadata(
++                    &g_event_info, sizeof(g_event_info));
++                return;
++            }
+             // Observe once before existing PIN handling/name changes/forwarding.
+             // Metadata only: no independent event read, response or bond claim.
+             ams::mc::amazon_observer::ObserveCore(static_cast<u32>(g_current_event_type),
+diff --git a/mc_mitm/source/mc/mc_service.hpp b/mc_mitm/source/mc/mc_service.hpp
+--- a/mc_mitm/source/mc/mc_service.hpp
++++ b/mc_mitm/source/mc/mc_service.hpp
+@@ -33,5 +33,7 @@
+     AMS_SF_METHOD_INFO(C, H, 65005, Result, GetCoreSecurityEvidence, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+     AMS_SF_METHOD_INFO(C, H, 65006, Result, GetCaptureDiagnostics, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
++    AMS_SF_METHOD_INFO(C, H, 65007, Result, ProbeNativeMetadata, (u32 nonce), (nonce)) \
++    AMS_SF_METHOD_INFO(C, H, 65008, Result, GetNativeMetadata, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+ 
+ AMS_SF_DEFINE_INTERFACE(ams::mc, IMissionControlInterface, AMS_MISSION_CONTROL_INTERFACE_INFO, 0x30eba3d4)
+ 
+@@ -49,5 +51,7 @@
+             Result GetCoreSecurityEvidence(const sf::OutPointerBuffer &out_buffer);
+             Result GetCaptureDiagnostics(const sf::OutPointerBuffer &out_buffer);
++            Result ProbeNativeMetadata(u32 nonce);
++            Result GetNativeMetadata(const sf::OutPointerBuffer &out_buffer);
+     };
+     static_assert(IsIMissionControlInterface<MissionControlService>);
+ 
+diff --git a/mc_mitm/source/mc/mc_service.cpp b/mc_mitm/source/mc/mc_service.cpp
+--- a/mc_mitm/source/mc/mc_service.cpp
++++ b/mc_mitm/source/mc/mc_service.cpp
+@@ -119,4 +119,19 @@
+         R_SUCCEED();
+     }
++    Result MissionControlService::ProbeNativeMetadata(u32 nonce) {
++        if (!amazon_observer::BeginNativeMetadataProbe(nonce))
++            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
++        const struct { u32 command, magic, nonce; } request{6, 0x314d5241, nonce};
++        // A fixed diagnostic round-trip only. No caller-supplied HCI or keys.
++        const BtdrvAddress zero{};
++        R_RETURN(btdrvWriteHidData2(zero, &request, sizeof(request)));
++    }
++    Result MissionControlService::GetNativeMetadata(const sf::OutPointerBuffer &out_buffer) {
++        if (!amazon_observer::ReadNativeMetadata(out_buffer.GetPointer(), out_buffer.GetSize()))
++            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
++        R_SUCCEED();
++    }
++
++
+ 
+ }

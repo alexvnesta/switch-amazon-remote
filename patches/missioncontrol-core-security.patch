@@ -1,0 +1,57 @@
+diff --git a/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_core.cpp b/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_core.cpp
+--- a/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_core.cpp
++++ b/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_core.cpp
+@@ -20,6 +20,7 @@
+ #include "../btdrv_mitm_flags.hpp"
+ #include "../../controllers/controller_management.hpp"
+ #include "../../utils.hpp"
++#include "../../amazon_remote/managed_observer_runtime.hpp"
+ 
+ namespace ams::bluetooth::core {
+ 
+@@ -192,6 +193,10 @@
+         {
+             std::scoped_lock lk(g_event_info_lock);
+             R_ABORT_UNLESS(btdrvGetEventInfo(&g_event_info, sizeof(bluetooth::EventInfo), &g_current_event_type));
++            // Observe once before existing PIN handling/name changes/forwarding.
++            // Metadata only: no independent event read, response or bond claim.
++            ams::mc::amazon_observer::ObserveCore(static_cast<u32>(g_current_event_type),
++                &g_event_info, sizeof(g_event_info));
+         }
+ 
+         // Process custom event and return
+diff --git a/mc_mitm/source/mc/mc_service.cpp b/mc_mitm/source/mc/mc_service.cpp
+--- a/mc_mitm/source/mc/mc_service.cpp
++++ b/mc_mitm/source/mc/mc_service.cpp
+@@ -112,6 +112,12 @@
+             return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+         R_SUCCEED();
+     }
++    Result MissionControlService::GetCoreSecurityEvidence(const sf::OutPointerBuffer &out_buffer) {
++        if (!amazon_observer::ReadCoreSecurityEvidence(out_buffer.GetPointer(), out_buffer.GetSize()))
++            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
++        R_SUCCEED();
++    }
++
+ 
+ 
+ }
+diff --git a/mc_mitm/source/mc/mc_service.hpp b/mc_mitm/source/mc/mc_service.hpp
+--- a/mc_mitm/source/mc/mc_service.hpp
++++ b/mc_mitm/source/mc/mc_service.hpp
+@@ -32,6 +32,7 @@
+     AMS_SF_METHOD_INFO(C, H, 65002, Result, GetCaptureStatus, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+     AMS_SF_METHOD_INFO(C, H, 65003, Result, EndTargetCapture, (), ()) \
+     AMS_SF_METHOD_INFO(C, H, 65004, Result, GetConnectionEvidence, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
++    AMS_SF_METHOD_INFO(C, H, 65005, Result, GetCoreSecurityEvidence, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+ 
+ AMS_SF_DEFINE_INTERFACE(ams::mc, IMissionControlInterface, AMS_MISSION_CONTROL_INTERFACE_INFO, 0x30eba3d4)
+ 
+@@ -46,6 +47,7 @@
+             Result GetCaptureStatus(const sf::OutPointerBuffer &out_buffer);
+             Result EndTargetCapture();
+             Result GetConnectionEvidence(const sf::OutPointerBuffer &out_buffer);
++            Result GetCoreSecurityEvidence(const sf::OutPointerBuffer &out_buffer);
+     };
+     static_assert(IsIMissionControlInterface<MissionControlService>);
+ 

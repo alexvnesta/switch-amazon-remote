@@ -3,6 +3,12 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 #include "libnx_session.hpp"
+#ifdef ARMODULE_WAKE_A3
+#include <new>
+#endif
+#ifdef ARMODULE_CENTRAL_BOND_B1
+#include "central_bond_wire.hpp"
+#endif
 #include "../../../tools/amazon-remote-pairing-audit/backend.hpp"
 #include "cached_characteristic_getter.hpp"
 #include "k7q3m7_descriptor.hpp"
@@ -11,6 +17,9 @@
 #include "scan_cache_census.hpp"
 #include "input_diagnostic_policy.hpp"
 #include "service_uuid_census.hpp"
+#ifdef ARMODULE_CONNECT_DISPATCH
+#include "connect_dispatch.hpp"
+#endif
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
@@ -19,6 +28,13 @@
 
 namespace amazon_remote {
 namespace {
+#ifdef ARMODULE_RETRY_A5
+using RetryConnectionEvent=decltype(BtdrvBleEventInfo{}.client_connection);
+static_assert(BtdrvBleEventType_ClientConnection==4 && sizeof(RetryConnectionEvent)==20);
+static_assert(offsetof(RetryConnectionEvent,result)==0 && offsetof(RetryConnectionEvent,status)==4 &&
+    offsetof(RetryConnectionEvent,client_if)==5 && offsetof(RetryConnectionEvent,conn_id)==8 &&
+    offsetof(RetryConnectionEvent,address)==12 && offsetof(RetryConnectionEvent,reason)==18);
+#endif
 // btGetLeEventInfo's public user payload and managed notify view share this
 // prefix. Compile-time guards prevent silently reusing it after SDK ABI drift.
 using NotifyEvent = decltype(BtdrvBleEventInfo{}.client_notify);
@@ -102,7 +118,11 @@ LibnxSession::LibnxSession(Logger logger, bool fingerprint_only, bool input_diag
       gatt_(system_gatt && fingerprint_only && input_diagnostic),
       native_requests_(native_requests && system_gatt && fingerprint_only && input_diagnostic),
       identity_test_(fingerprint_only), input_diagnostic_(fingerprint_only && input_diagnostic),
-      input_budget_(sustained_input && native_requests_) {}
+      input_budget_(sustained_input && native_requests_
+#ifdef ARMODULE_AUTOMATIC_A1
+        , true
+#endif
+      ) {}
 void LibnxSession::Log(const char *format, ...) {
     if (!logger_) return;
     char message[256]; va_list args; va_start(args, format); std::vsnprintf(message, sizeof message, format, args); va_end(args); logger_(message);
@@ -157,8 +177,54 @@ Result LibnxSession::InitializeIdentityTest(BtdrvAddress target) {
     if (!identity_test_ || initialized_ || link_attempted_ || scanning_ || !ValidCensusTarget(CensusTarget(target))) return Invalid();
     const auto rc = Initialize(target);
     if (R_FAILED(rc)) return rc;
+#ifdef ARMODULE_WAKE_A3
+    if(retired_count_){
+        // Drain only this freshly opened client's queue, never the driver's
+        // shared event stream. No old event can satisfy a new pending request.
+        unsigned discarded{};
+        for(;;){
+            const auto event_rc=eventWait(&operation_event_,0);
+            if(Timeout(event_rc))break;
+            if(R_FAILED(event_rc) || discarded>=32){Close();return R_FAILED(event_rc)?event_rc:Invalid();}
+            BtdrvBleEventInfo old{};BtdrvBleEventType type{};
+            const auto read_rc=btGetLeEventInfo(&old,sizeof old,&type);
+            if(R_FAILED(read_rc)){Close();return read_rc;}
+            ++discarded;
+        }
+        Log("WAKE_A3_CLIENT_QUEUE drained=%u before any new request; new fingerprint/security/subscriptions required",discarded);
+    }
+#endif
     link_only_ = true;
     if (input_diagnostic_) {
+#ifdef ARMODULE_CENTRAL_BOND_B1
+        auto bond_rc=smGetService(&bond_service_,"mc");
+        central_bond::Status state{};
+        if(R_SUCCEEDED(bond_rc))bond_rc=serviceDispatch(&bond_service_,central_bond::StatusCommand,
+            .buffer_attrs={SfBufferAttr_HipcPointer|SfBufferAttr_Out},.buffers={{&state,sizeof state}});
+        if(R_FAILED(bond_rc) || state.magic!=central_bond::Magic || state.version!=1 ||
+           (state.store!=central_bond::Store::Empty && state.store!=central_bond::Store::Saved)){
+            Close();return R_FAILED(bond_rc)?bond_rc:Invalid();
+        }
+        bond_saved_=state.store==central_bond::Store::Saved;
+        Log("B1_PRIVATE_STORE=%s; no key bytes in module or SD",bond_saved_?"SAVED":"EMPTY");
+#if defined(ARMODULE_SAVED_DISCOVERY_B3) || defined(ARMODULE_NATIVE_PEER_C1)
+        if(!bond_saved_){Log("B3_SAVED_BOND_REQUIRED: no discovery or enrollment fallback");Close();return Invalid();}
+#endif
+#ifdef ARMODULE_NATIVE_PEER_C1
+        if(!state.generation){Close();return Invalid();}
+        peer_generation_=state.generation;
+#endif
+#ifdef ARMODULE_NATIVE_HCI_C2
+        central_bond::HciTrace trace{};
+        bond_rc=serviceDispatch(&bond_service_,central_bond::HciTraceCommand,
+            .buffer_attrs={SfBufferAttr_HipcPointer|SfBufferAttr_Out},.buffers={{&trace,sizeof trace}});
+        if(R_FAILED(bond_rc) || trace.magic!=central_bond::HciTraceMagic || trace.version!=1 ||
+           trace.supported!=1 || trace.window_nonce || trace.count || trace.dropped || trace.capture_start_ms){
+            Log("C2_TRACE_COMPANION_NOT_READY: refusing new connection");Close();return R_FAILED(bond_rc)?bond_rc:Invalid();
+        }
+        Log("C2_TRACE_COMPANION_READY: received command-status metadata only; no radio call");
+#endif
+#endif
         auto pairing_rc = btdevAcquireBlePairingEvent(&pairing_event_);
         Log("API=btdevAcquireBlePairingEvent(input diagnostic) Result=%08lx; generic hints are not target/bond proof", static_cast<unsigned long>(pairing_rc));
         if (R_FAILED(pairing_rc)) { Close(); return pairing_rc; }
@@ -168,6 +234,14 @@ Result LibnxSession::InitializeIdentityTest(BtdrvAddress target) {
     return 0;
 }
 Result LibnxSession::StartLinkOnlyScan(std::uint64_t now) {
+#ifdef ARMODULE_NATIVE_PEER_C1
+    // This separately built saved-peer test never falls back to discovery.
+    (void)now;
+    return Invalid();
+#else
+#ifdef ARMODULE_KNOWN_RECONNECT_CHECK
+    if (known_reconnect_ready_ms_) return Invalid();
+#endif
     if (!initialized_ || !link_only_ || link_attempted_ || scanning_ || !now) return Invalid();
     auto rc = btmuAcquireBleConnectionEvent(&connection_event_);
     Log("API=btmuAcquireBleConnectionEvent(link-only) Result=%08lx", static_cast<unsigned long>(rc));
@@ -177,40 +251,177 @@ Result LibnxSession::StartLinkOnlyScan(std::uint64_t now) {
     Log("API=btmuAcquireBleScanEvent(link-only) Result=%08lx", static_cast<unsigned long>(rc));
     if (R_FAILED(rc)) return rc;
     scan_event_open_ = true;
+#ifdef ARMODULE_MANUFACTURER_SCAN_CHECK
+    // Exact first eight manufacturer bytes retained from the configured
+    // K7Q3M7's captured AD. No wildcard, native Nintendo profile or bonding.
+    BtdrvBleAdvertisePacketParameter parameter{}; parameter.company_id=0x0171;
+    constexpr u8 pattern[]{0x04,0x27,0x02,0x7d,0,0};
+    std::copy_n(pattern,6,parameter.pattern_data);
+    rc=btmuStartBleScanForGeneral(parameter);
+    Log("API=btmuStartBleScanForGeneral(exact captured manufacturer71010427027d0000) Result=%08lx; ordinary advertisement compatibility UNVERIFIED",static_cast<unsigned long>(rc));
+#else
     BtdrvGattAttributeUuid uuid{}; uuid.size = HidServiceUuid128.size();
     std::copy(HidServiceUuid128.begin(), HidServiceUuid128.end(), uuid.uuid);
     rc = btmuStartBleScanForSmartDevice(&uuid);
     Log("API=btmuStartBleScanForSmartDevice(HID128 link-only) Result=%08lx; HID16 matching remains unverified", static_cast<unsigned long>(rc));
+#endif
     if (R_FAILED(rc)) return rc;
     scanning_ = true; scan_started_ms_ = armTicksToNs(armGetSystemTick()) / 1000000;
     last_scan_poll_ms_ = last_connection_poll_ms_ = 0;
     general_cache_seen_ = smart_cache_seen_ = general_target_dumped_ = smart_target_dumped_ = false;
     Log("A starts scan only; physical ZL plus fresh target-only managed sighting required for one link request; no cache auto-connect");
     return 0;
+#endif
 }
 Result LibnxSession::ConfirmObservedLink(const SightingWire &sighting, std::uint64_t now, std::uint64_t capture_deadline) {
     if (!initialized_ || !link_only_ || !scanning_ || link_attempted_ || connection_requested_ || have_connection_) return Invalid();
+#ifdef ARMODULE_CONNECT_DISPATCH
+    // Do not grant freshness from a caller's older loop timestamp.
+    now = armTicksToNs(armGetSystemTick()) / 1000000;
+#endif
     const auto assessment = AssessSighting(sighting, CensusTarget(target_), scan_started_ms_, now);
     Log("Physical ZL sighting gate assessment=%u captured_boot_ms=%llu scan_start=%llu now=%llu", unsigned(assessment),
         static_cast<unsigned long long>(sighting.captured_boot_ms), static_cast<unsigned long long>(scan_started_ms_), static_cast<unsigned long long>(now));
     if (assessment != SightingAssessment::FreshCandidate) return 0;
     if (identity_test_ && (capture_deadline <= now || capture_deadline-now > 60000)) return Invalid();
     capture_deadline_ms_ = capture_deadline;
+    const auto marker_result = PersistLinkMarker(now);
+    if (R_FAILED(marker_result)) return marker_result;
+    return RequestConnection(&sighting, now);
+}
+Result LibnxSession::PersistLinkMarker(std::uint64_t now) {
     // Conservatively block repeat attempts across process exit/relaunch. Only
     // the operator may remove this file after a confirmed physical reboot.
     link_attempted_ = true;
+#ifdef ARMODULE_AUTOMATIC_A1
+    char attempt_path[160]{};
+    std::snprintf(attempt_path, sizeof attempt_path,
+        "sdmc:/config/amazon-remote-auto-a1/attempt-%llu.txt",
+        static_cast<unsigned long long>(armGetSystemTick()));
+    FILE *marker = std::fopen(attempt_path, "wx");
+#else
     FILE *marker = std::fopen("sdmc:/config/amazon-remote/link-test-pending.txt", "wx");
+#endif
     if (!marker) { Log("Pending marker could not be created exclusively; FAIL CLOSED, no connection IPC, reboot/recovery required"); return Invalid(); }
     const bool wrote = std::fprintf(marker, "prototype=0.1.10 input_diagnostic=%u boot_ms=%llu\nReboot must be confirmed before operator removes this marker.\n", input_diagnostic_, static_cast<unsigned long long>(now)) > 0;
     const bool flushed = std::fflush(marker) == 0;
     const bool synced = ::fsync(::fileno(marker)) == 0;
     const bool closed = std::fclose(marker) == 0;
     if (!wrote || !flushed || !synced || !closed) { Log("Pending marker persistence failed; FAIL CLOSED, no connection IPC, marker retained"); return Invalid(); }
+#ifdef ARMODULE_RETRY_A5
+    Log("RETRY_A5 attempt journal retained; only observed early terminal failure may permit another request; pending timeouts cannot retry");
+#else
     Log("Persistent pending marker retained on ALL outcomes; no public address-cancel API; physical reboot required after this test");
-    const auto rc = RequestConnection(&sighting);
-    return rc;
+#endif
+    return 0;
 }
+#if defined(ARMODULE_KNOWN_RECONNECT_CHECK) || defined(ARMODULE_NATIVE_PEER_C1)
+Result LibnxSession::PrepareKnownReconnect(std::uint64_t now,[[maybe_unused]] std::uint64_t deadline) {
+    const auto actual = armTicksToNs(armGetSystemTick()) / 1000000;
+    if (!initialized_ || !link_only_ || !identity_test_ || !input_diagnostic_ ||
+        !native_requests_ || !native_open_ || !gatt_.SystemOpen() || scanning_ ||
+        connection_event_open_ || link_attempted_ || connection_requested_ || have_connection_ ||
+        known_reconnect_ready_ms_ || !now || now > actual || actual - now > 3000 ||
+        !ValidCensusTarget(CensusTarget(target_))) return Invalid();
+#ifdef ARMODULE_NATIVE_PEER_C1
+    if(!bond_saved_ || !peer_generation_ || peer_nonce_ || deadline<=actual || deadline-actual>60000)return Invalid();
+#endif
+    const auto rc = btmuAcquireBleConnectionEvent(&connection_event_);
+    Log("API=btmuAcquireBleConnectionEvent(known reconnect, no scan) Result=%08lx", static_cast<unsigned long>(rc));
+    if (R_FAILED(rc)) return rc;
+    connection_event_open_ = true;
+#ifdef ARMODULE_NATIVE_PEER_C1
+    peer_started_ms_=actual;peer_deadline_ms_=deadline;
+    peer_nonce_=static_cast<std::uint32_t>(actual)^0x31505241u;if(!peer_nonce_)peer_nonce_=1;
+    struct {u64 placeholder_pid;central_bond::PreparePeer request;} request{0,{peer_nonce_,0,deadline}};
+    const auto result=serviceDispatchIn(&bond_service_,central_bond::PreparePeerCommand,request,.in_send_pid=true);
+    Log("C1_PREPARE_REQUEST Result=%08lx; saved generation=%llu; queue acceptance is NOT native readiness",static_cast<unsigned long>(result),static_cast<unsigned long long>(peer_generation_));
+    return result;
+#else
+    known_reconnect_ready_ms_ = armTicksToNs(armGetSystemTick()) / 1000000;
+    Log("KNOWN_RECONNECT_PREPARED: configured address only; no scan, cache adoption, bond request or connection yet. Physical ZL required; fingerprint and input guards unchanged.");
+    return known_reconnect_ready_ms_ ? 0 : Invalid();
+#endif
+}
+Result LibnxSession::ConfirmKnownReconnect(std::uint64_t now, std::uint64_t deadline) {
+    const auto actual = armTicksToNs(armGetSystemTick()) / 1000000;
+#ifdef ARMODULE_NATIVE_PEER_C1
+    const auto peer_rc=PollPeerPreparation(actual,true);
+    if(R_FAILED(peer_rc) || deadline!=peer_deadline_ms_)return R_FAILED(peer_rc)?peer_rc:Invalid();
+#endif
+    if (!initialized_ || !link_only_ || !KnownReconnectPrepared() || scanning_ ||
+        connection_requested_ || have_connection_ || now < known_reconnect_ready_ms_ ||
+        now - known_reconnect_ready_ms_ >= 60000 || now > actual || actual - now > 3000 ||
+        deadline <= actual || deadline - known_reconnect_ready_ms_ > 60000) return Invalid();
+    capture_deadline_ms_ = deadline;
+#ifdef ARMODULE_NATIVE_PEER_C1
+    Log("C1_OPERATOR_CONNECT: physical ZL, native BLE identity readback ready; remote presence/encryption unproven. No pairing fallback.");
+#else
+    Log("KNOWN_RECONNECT_OPERATOR: physical ZL requested one configured-address connection. Presence/bonding unproven; no discovery candidate required. No native/managed bond action.");
+#endif
+    const auto rc = PersistLinkMarker(now);
+    return R_FAILED(rc) ? rc : RequestConnection();
+}
+#endif
+#ifdef ARMODULE_NATIVE_PEER_C1
+Result LibnxSession::PollPeerPreparation(std::uint64_t now,bool force){
+    if(!peer_nonce_ || !bond_saved_ || !peer_generation_ || now<peer_started_ms_ || now>=peer_deadline_ms_)return Invalid();
+    if(!force && peer_poll_ms_ && now-peer_poll_ms_<100)return 0;
+    peer_poll_ms_=now;
+    central_bond::PeerStatus s{};
+    auto rc=serviceDispatch(&bond_service_,central_bond::PeerStatusCommand,
+        .buffer_attrs={SfBufferAttr_HipcPointer|SfBufferAttr_Out},.buffers={{&s,sizeof s}});
+    if(R_FAILED(rc))return rc;
+    if(s.magic!=central_bond::PeerMagic || s.version!=central_bond::PeerVersion || s.nonce!=peer_nonce_ ||
+       s.generation!=peer_generation_ || s.capture_deadline_ms!=peer_deadline_ms_ ||
+       s.started_ms<peer_started_ms_ || s.started_ms>now)return Invalid();
+    if(s.phase==central_bond::PeerPhase::Failed || s.phase==central_bond::PeerPhase::Cancelled){
+        Log("C1_PREPARE_FAILED phase=%u Result=%08lx existed=%u type=%u address_type=%u",unsigned(s.phase),static_cast<unsigned long>(s.result),s.existed,s.device_type,s.address_type);
+        return s.result?s.result:Invalid();
+    }
+    if(s.phase==central_bond::PeerPhase::Ready){
+        if(s.result || s.device_type!=2 || s.address_type!=0 || s.existed>1)return Invalid();
+        if(!known_reconnect_ready_ms_){
+            known_reconnect_ready_ms_=now;
+            Log("C1_NATIVE_PEER_READY existed_before=%u type=BLE2 address_type=PUBLIC0; no connection or security request yet",s.existed);
+        }
+        return 0;
+    }
+    if(known_reconnect_ready_ms_ || now-peer_started_ms_>=3000 ||
+       (s.phase!=central_bond::PeerPhase::Queued && s.phase!=central_bond::PeerPhase::Waiting))return Invalid();
+    return 0;
+}
+#endif
+#ifdef ARMODULE_NATIVE_HCI_C2
+void LibnxSession::PollHciTrace(std::uint64_t now,bool force){
+    if(hci_read_failed_ || !peer_nonce_ || (!force && hci_polled_ms_ && now>=hci_polled_ms_ && now-hci_polled_ms_<100))return;
+    hci_polled_ms_=now;
+    central_bond::HciTrace trace{};
+    const auto rc=serviceDispatch(&bond_service_,central_bond::HciTraceCommand,
+        .buffer_attrs={SfBufferAttr_HipcPointer|SfBufferAttr_Out},.buffers={{&trace,sizeof trace}});
+    // The companion can receive a response during this IPC. Bound timestamps
+    // by the clock after the read, not the older event-loop snapshot.
+    const auto read_ms=armTicksToNs(armGetSystemTick())/1000000;
+    bool valid=R_SUCCEEDED(rc) && read_ms>=now && trace.magic==central_bond::HciTraceMagic && trace.version==1 &&
+        trace.supported==1 && trace.count<=4 && trace.count>=hci_logged_ &&
+        (!trace.count || (trace.window_nonce==peer_nonce_ && trace.capture_start_ms>=peer_started_ms_ && trace.capture_start_ms<=read_ms));
+    for(unsigned i=0;valid && i<trace.count;++i){const auto &e=trace.entries[i];
+        valid=e.status<=255 && e.own_address_type<=3 && e.boot_ms>=trace.capture_start_ms && e.boot_ms<=read_ms &&
+            (!i || e.boot_ms>=trace.entries[i-1].boot_ms);
+    }
+    if(!valid){hci_read_failed_=true;Log("C2_HCI_TRACE_UNAVAILABLE Result=%08lx; diagnostic failure only, connection behavior unchanged",static_cast<unsigned long>(rc));return;}
+    while(hci_logged_<trace.count){const auto &e=trace.entries[hci_logged_++];
+        Log("C2_HCI_COMMAND_STATUS index=%u boot_ms=%llu opcode=200d status=%02x own_address_type=%u target_command_matched=1 window_nonce=%u; command_status_not_link_or_bond_proof=1",
+            hci_logged_,static_cast<unsigned long long>(e.boot_ms),e.status,e.own_address_type,trace.window_nonce);
+    }
+}
+#endif
 Result LibnxSession::Connect(bool filtered_discovery, bool authenticated_reads) {
+#ifdef ARMODULE_NATIVE_PEER_C1
+    // C1 admits connection only through its prepared-peer physical-ZL path.
+    (void)filtered_discovery;(void)authenticated_reads;
+    return Invalid();
+#else
     if (identity_test_ || !initialized_ || connection_requested_ || have_connection_ || scanning_) return Invalid();
     authenticated_reads_ = authenticated_reads;
     auto rc = btdevAcquireBleConnectionStateChangedEvent(&connection_event_);
@@ -235,9 +446,11 @@ Result LibnxSession::Connect(bool filtered_discovery, bool authenticated_reads) 
     general_cache_seen_ = smart_cache_seen_ = general_target_dumped_ = smart_target_dumped_ = false;
     Log("Filtered discovery started; exact configured MAC only; 20-second deadline; no automatic fallback or ambient pairing");
     return 0;
+#endif
 }
-Result LibnxSession::RequestConnection(const SightingWire *sighting) {
+Result LibnxSession::RequestConnection(const SightingWire *sighting, [[maybe_unused]] std::uint64_t accepted_ms) {
     if (!initialized_ || connection_requested_ || have_connection_) return Invalid();
+    [[maybe_unused]] std::uint64_t dispatch_ms{};
     // Do not adopt or later disconnect another client's pre-existing target.
     std::array<BtdrvBleConnectionInfo, 16> connections{}; u8 count = 0;
     auto rc = link_only_ ? btmuBleGetConnectionState(connections.data(), connections.size(), &count) : btdevGetBleConnectionInfoList(connections.data(), connections.size(), &count);
@@ -246,6 +459,22 @@ Result LibnxSession::RequestConnection(const SightingWire *sighting) {
     if (count >= connections.size()) return Invalid();
     for (std::size_t i = 0; i < count; ++i)
         if (!std::memcmp(&connections[i].addr, &target_, sizeof target_)) return Invalid();
+    // A successful empty user view does not exclude a system-only target.
+    // Post1 observed exactly that after our user client closed. Borrow the
+    // already-open system GATT client; never open another client or adopt,
+    // disconnect or rewrite a pre-existing native connection.
+    if (gatt_.SystemOpen()) {
+        connections.fill({}); count = 0;
+        rc = btmBleGetConnectionState(connections.data(), connections.size(), &count);
+        Log("API=system connection-list precheck Result=%08lx count=%u", static_cast<unsigned long>(rc), count);
+        if (R_FAILED(rc)) return rc;
+        if (count >= connections.size()) return Invalid();
+        for (std::size_t i = 0; i < count; ++i)
+            if (!std::memcmp(&connections[i].addr, &target_, sizeof target_)) {
+                Log("PREEXISTING_SYSTEM_TARGET: no connect or adoption; pending marker retained");
+                return Invalid();
+            }
+    }
     // Discard a previously signalled discovery indication before our connect.
     // BTM's discovery event carries no connection identity; coexistence remains
     // explicitly unsupported with another client registering these UUID paths.
@@ -255,17 +484,57 @@ Result LibnxSession::RequestConnection(const SightingWire *sighting) {
     }
     discovery_signalled_ = false;
     if (link_only_) {
-        // File flush, IPC and logging may have blocked since the physical ZL
-        // check. Reassess with the real clock immediately before the request.
-        const auto dispatch_ms = armTicksToNs(armGetSystemTick()) / 1000000;
+        // File flush, IPC and logging may have blocked since physical ZL.
+        // Recheck the lease and dispatch budget immediately before the request.
+        dispatch_ms = armTicksToNs(armGetSystemTick()) / 1000000;
+#if defined(ARMODULE_KNOWN_RECONNECT_CHECK) || defined(ARMODULE_NATIVE_PEER_C1)
+        if (known_reconnect_ready_ms_) {
+#ifdef ARMODULE_NATIVE_PEER_C1
+            const auto ready_rc=PollPeerPreparation(dispatch_ms,true);
+            if(R_FAILED(ready_rc))return ready_rc;
+            dispatch_ms=armTicksToNs(armGetSystemTick())/1000000;
+#endif
+            if (sighting || !link_attempted_ || dispatch_ms < known_reconnect_ready_ms_ ||
+                dispatch_ms - known_reconnect_ready_ms_ >= 60000 || dispatch_ms >= capture_deadline_ms_) {
+                Log("Known reconnect deadline/clock invalid; NO connection IPC; marker retained");
+                return Invalid();
+            }
+        } else
+#endif
         if (!sighting || (identity_test_ && dispatch_ms >= capture_deadline_ms_) ||
+#ifdef ARMODULE_CONNECT_DISPATCH
+            !ValidConnectDispatch(*sighting, CensusTarget(target_), scan_started_ms_, accepted_ms, dispatch_ms)) {
+            Log("P3_DISPATCH_REFUSED accepted_ms=%llu dispatch_ms=%llu budget_ms=%llu", static_cast<unsigned long long>(accepted_ms),
+                static_cast<unsigned long long>(dispatch_ms), static_cast<unsigned long long>(ConnectDispatchBudgetMs));
+#else
             AssessSighting(*sighting, CensusTarget(target_), scan_started_ms_, dispatch_ms) != SightingAssessment::FreshCandidate) {
+#endif
             Log("Final presence gate expired/invalid; NO connection IPC; pending marker retained, reboot/recovery required");
             return Invalid();
         }
     }
     // btmu performs connection/client management; no private MissionControl BLE code.
+#ifdef ARMODULE_RETRY_A5
+    if(!early_retry_configured_) {
+        if(!early_retry_.Configure(peer_nonce_,peer_started_ms_,capture_deadline_ms_))return Invalid();
+        early_retry_configured_=true;
+    }
+    ConnectionEvidenceWire evidence{};central_bond::HciTrace hci{};
+    rc=ReadRetryEvidence(evidence,hci);if(rc)return rc;
+    dispatch_ms=armTicksToNs(armGetSystemTick())/1000000;
+    if(!early_retry_.Begin(evidence,hci,dispatch_ms))return Invalid();
+    early_request_completed_=false;early_settling_=false;
+#endif
     rc = link_only_ ? btmuBleConnect(target_) : btdevConnectToGattServer(target_);
+#ifdef ARMODULE_RETRY_A5
+    Log("RETRY_A5_CONNECT attempt=%u Result=%08lx; same saved peer; no new pairing",early_retry_.Attempts(),static_cast<unsigned long>(rc));
+#endif
+#ifdef ARMODULE_CONNECT_DISPATCH
+    // Log only after IPC. A log flush must not consume the checked budget.
+    if (sighting) Log("P3_DISPATCH_REQUEST accepted_ms=%llu captured_ms=%llu dispatch_ms=%llu budget_ms=%llu", static_cast<unsigned long long>(accepted_ms),
+        static_cast<unsigned long long>(sighting->captured_boot_ms), static_cast<unsigned long long>(dispatch_ms),
+        static_cast<unsigned long long>(ConnectDispatchBudgetMs));
+#endif
     Log("API=%s Result=%08lx", link_only_ ? "btmuBleConnect(link-only physical ZL)" : "btdevConnectToGattServer", static_cast<unsigned long>(rc));
     if (R_SUCCEEDED(rc)) {
         connection_requested_ = true;
@@ -276,8 +545,13 @@ Result LibnxSession::RequestConnection(const SightingWire *sighting) {
 }
 Result LibnxSession::StopOwnScan() {
     if (!scanning_) return 0;
+#ifdef ARMODULE_MANUFACTURER_SCAN_CHECK
+    const auto rc=link_only_ ? btmuStopBleScanForGeneral() : btdevStopBleScanSmartDevice();
+    Log("API=%s(own successful start) Result=%08lx",link_only_ ? "btmuStopBleScanForGeneral" : "btdevStopBleScanSmartDevice",static_cast<unsigned long>(rc));
+#else
     const auto rc = link_only_ ? btmuStopBleScanForSmartDevice() : btdevStopBleScanSmartDevice();
     Log("API=btdevStopBleScanSmartDevice(own successful start) Result=%08lx", static_cast<unsigned long>(rc));
+#endif
     if (R_SUCCEEDED(rc)) scanning_ = false;
     return rc;
 }
@@ -311,10 +585,21 @@ Result LibnxSession::PollScan(std::uint64_t now) {
         std::array<BtdrvBleScanResult, 10> results{}; u8 count = 0;
         const auto general_rc = btmuGetBleScanResultsForGeneral(results.data(), results.size(), &count);
         LogScanCacheSummary("general", general_rc, count, results.data(), sizeof results);
+#ifdef ARMODULE_MANUFACTURER_SCAN_CHECK
+        if(link_only_ && (R_FAILED(general_rc) || !ValidScanCount(count))) {
+            Log("MANUFACTURER_SCAN_GENERAL_GETTER_REFUSED Result=%08lx count=%u; no cache admission",static_cast<unsigned long>(general_rc),count);
+            return R_FAILED(general_rc) ? general_rc : Invalid();
+        }
+#endif
         // General is diagnostics ONLY: never connects/adopts based on that cache.
         results.fill({}); count = 0;
         const auto rc = btmuGetBleScanResultsForSmartDevice(results.data(), results.size(), &count);
         LogScanCacheSummary("smart", rc, count, results.data(), sizeof results);
+#ifdef ARMODULE_MANUFACTURER_SCAN_CHECK
+        // In S2 link-only mode smart is a secondary census, not the started
+        // scan's getter. Neither bucket authorizes a connection.
+        if(!link_only_) {
+#endif
         if (R_FAILED(rc)) { Log("API=btmuGetBleScanResultsForSmartDevice Result=%08lx", static_cast<unsigned long>(rc)); return rc; }
         if (!ValidScanCount(count)) { Log("Rejected impossible scan result count=%u", count); return Invalid(); }
         if (count == results.size()) Log("Scan list at capacity; unreturned advertisers may exist");
@@ -330,8 +615,15 @@ Result LibnxSession::PollScan(std::uint64_t now) {
             auto stop_rc = StopOwnScan(); if (R_FAILED(stop_rc)) return stop_rc;
             return RequestConnection();
         }
+#ifdef ARMODULE_MANUFACTURER_SCAN_CHECK
+        }
+#endif
     }
     if (!connection_requested_ && now - scan_started_ms_ >= (identity_test_ ? 60000u : 20000u)) {
+#ifdef ARMODULE_MANUFACTURER_SCAN_CHECK
+        if(link_only_) Log("Manufacturer scan INCONCLUSIVE: target not observed; ordinary advertisement compatibility with the captured8-byte filter is unverified. Not proof remote is absent or BLE disabled.");
+        else
+#endif
         Log("Filtered scan INCONCLUSIVE: target not observed; HID16-vs-HID128 normalization is unverified. Not proof remote is absent or BLE disabled.");
         auto rc = StopOwnScan(); return R_FAILED(rc) ? rc : Invalid();
     }
@@ -500,6 +792,21 @@ Result LibnxSession::ReadInputInventory(const char *label, bool adopt) {
     }
     rc = binding(); if (R_FAILED(rc)) return rc;
     if (!adopt) return 0; // Pre-security observation never admits reports.
+#ifdef ARMODULE_HID_INFO_H1
+    // Reuse the existing post-security cache query. This does not read any value
+    // yet and never changes which Report endpoints the normal path admits.
+    std::array<Attribute,100> info_records{};
+    bool info_bounds = true;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto &c = characteristics[i];
+        if (ShortUuid(c.uuid) == 0x2a4a && c.instance_id > 255) info_bounds = false;
+        info_records[i] = {Kind::Characteristic,c.handle,0,ShortUuid(c.uuid),c.properties,
+                           static_cast<u8>(c.instance_id),false};
+    }
+    hid_information_ = {};
+    if (!info_bounds || !SelectHidInformation(hid,info_records.data(),count,hid_information_))
+        Log("HID_INFO_H1_UNAVAILABLE: unique bounded 2a4a not observed; no diagnostic read");
+#endif
     std::sort(characteristics.begin(), characteristics.begin()+count,
         [](const auto &a, const auto &b) { return a.handle < b.handle; });
     std::array<Attribute,HogpClient::ReportCapacity*3> reports{}; std::size_t size = 0;
@@ -638,6 +945,10 @@ Result LibnxSession::Execute(const Request &r) {
     return Invalid();
 }
 Result LibnxSession::OnOperation() {
+#ifdef ARMODULE_LATENCY_A6
+    // Host dequeue timing, not an air-interface or physical-button timestamp.
+    const auto received_ms=armTicksToNs(armGetSystemTick())/1000000;
+#endif
     // Raw event preserves original status and size; SDK helper otherwise clamps size.
     BtdrvBleEventInfo event{}; BtdrvBleEventType type{};
     auto rc = btGetLeEventInfo(&event, sizeof event, &type); if (R_FAILED(rc)) return rc;
@@ -652,6 +963,9 @@ Result LibnxSession::OnOperation() {
     Log("user GATT event conn=%u result=%u flags=%02x service=%04x char=%04x desc=%04x size=%u", op.conn_id, op.result, op.type,
         ShortUuid(op.serv_uuid), ShortUuid(op.char_uuid), ShortUuid(op.desc_uuid), op.size);
     if (op.size > sizeof op.data) return Invalid();
+#ifdef ARMODULE_HID_INFO_H1
+    if (CompleteHidInformation(event)) return 0;
+#endif
     // Do not capture vendor/voice or foreign-service payloads in this diagnostic.
     if (identity_test_ && (op.type & 4) &&
         (op.type != 4 || op.result || ShortUuid(op.serv_uuid) != 0x1812 || ShortUuid(op.char_uuid) != 0x2a4d || (op.size != 3 && op.size != 4))) return Invalid();
@@ -672,6 +986,12 @@ Result LibnxSession::OnOperation() {
         const auto previous = decoder_.Buttons();
         auto result = decoder_.Ingest(report.id, report.payload, report.size);
         if (result == Update::Invalid || result == Update::UnsupportedDescriptor) return Invalid();
+#ifdef ARMODULE_LATENCY_A6
+        if(input_timing_.sequence!=UINT64_MAX)++input_timing_.sequence;
+        input_timing_.received_ms=received_ms;
+        input_timing_.decoded_ms=armTicksToNs(armGetSystemTick())/1000000;
+        input_timing_.buttons=decoder_.Buttons();
+#endif
         Log("input report=%02x buttons=%08lx update=%u", report.id, static_cast<unsigned long>(decoder_.Buttons()), unsigned(result));
         if (previous != decoder_.Buttons()) {
             char delta[240]{}; FormatButtons(delta, sizeof delta, previous, decoder_.Buttons()); Log("buttons %s", delta);
@@ -709,12 +1029,19 @@ Result LibnxSession::OnOperation() {
     return Invalid();
 }
 void LibnxSession::ResetInput() {
+#ifdef ARMODULE_HID_INFO_H1
+    // Once per process, not once per reconnect. Retire pending observations at
+    // every ownership boundary; never carry evidence into a new connection.
+    hid_information_pending_ = false;
+    hid_information_ = {};
+    hid_information_ready_ms_ = 0;
+#endif
     if (decoder_.Buttons()) { char delta[240]{}; FormatButtons(delta, sizeof delta, decoder_.Buttons(), 0); Log("reset buttons %s", delta); }
     decoder_.Disconnect(); client_.Disconnect(); pending_operation_ = false; cache_loaded_ = mtu_requested_ = discovery_signalled_ = false;
     input_budget_.Reset();connection_log_gate_.Reset();input_ready_logged_=false;
 }
 Result LibnxSession::Poll(std::uint64_t now) {
-    if (!initialized_) return Invalid();
+    if (!initialized_ || disconnect_state_ != DisconnectState::NotStarted) return Invalid();
     if (link_only_) return PollLinkOnly(now);
     if (scanning_) return PollScan(now);
     for (auto *event : {&connection_event_, &pairing_event_}) {
@@ -794,9 +1121,78 @@ Result LibnxSession::Poll(std::uint64_t now) {
     }
     return 0;
 }
+#ifdef ARMODULE_RETRY_A5
+Result LibnxSession::ReadRetryEvidence(ConnectionEvidenceWire &events,central_bond::HciTrace &hci) {
+    if(!serviceIsActive(&bond_service_))return Invalid();
+    auto rc=serviceDispatch(&bond_service_,65004,
+        .buffer_attrs={SfBufferAttr_HipcPointer|SfBufferAttr_Out},.buffers={{&events,sizeof events}});
+    if(rc)return rc;
+    return serviceDispatch(&bond_service_,central_bond::HciTraceCommand,
+        .buffer_attrs={SfBufferAttr_HipcPointer|SfBufferAttr_Out},.buffers={{&hci,sizeof hci}});
+}
+Result LibnxSession::ReadTargetAbsent(bool &absent) {
+    absent=false;if(!initialized_ || !gatt_.SystemOpen())return Invalid();
+    bool found=false;
+    for(bool system:{true,false}) {
+        std::array<BtdrvBleConnectionInfo,16> entries{};u8 count{};
+        const auto rc=system?btmBleGetConnectionState(entries.data(),entries.size(),&count):
+            btmuBleGetConnectionState(entries.data(),entries.size(),&count);
+        if(rc || count>=entries.size())return rc?rc:Invalid();
+        for(unsigned i=0;i<count;++i)if(!std::memcmp(&entries[i].addr,&target_,sizeof target_))found=true;
+    }
+    absent=!found;return 0;
+}
+Result LibnxSession::PollEarlyLinkRetry(std::uint64_t now,bool &settling) {
+    settling=early_settling_;
+    if(!connection_requested_ || have_connection_)return 0;
+    if(now<early_polled_)return Invalid();
+    if(early_polled_ && now-early_polled_<100)return 0;
+    early_polled_=now;
+    if(!early_retry_configured_ || bond_started_ || fingerprint_logged_ || cache_loaded_ ||
+       inputs_loaded_ || subscription_count_ || pending_operation_ || scanning_)return Invalid();
+    ConnectionEvidenceWire events{};central_bond::HciTrace hci{};
+    auto rc=ReadRetryEvidence(events,hci);if(rc)return rc;
+    now=armTicksToNs(armGetSystemTick())/1000000;
+    const auto decision=early_retry_.Observe(events,hci,now);
+    if(decision==EarlyLinkRetry::Decision::Refuse) {
+        Log("RETRY_A5_REFUSED: ambiguous/unsupported callback evidence; no retry or cancellation");return Invalid();
+    }
+    if(decision==EarlyLinkRetry::Decision::Waiting)return 0;
+    settling=early_settling_=true;
+    if(early_logged_failure_!=early_retry_.FailureTime()) {
+        early_logged_failure_=early_retry_.FailureTime();
+        Log("RETRY_A5_EARLY_FAILURE attempt=%u reason_raw=003e; matching callback tuple and accepted target command; checking absent views",early_retry_.Attempts());
+    }
+    bool absent{};rc=ReadTargetAbsent(absent);if(rc)return rc;
+    now=armTicksToNs(armGetSystemTick())/1000000;
+    const auto action=early_retry_.Absent(now,absent);
+    early_request_completed_=early_retry_.CompletedAbsent();
+    if(action==EarlyLinkRetry::Decision::Refuse) {
+        Log("RETRY_A5_STOP: absence/budget/capacity guard; no further request");return Invalid();
+    }
+    if(action!=EarlyLinkRetry::Decision::Retry)return 0;
+    // No encryption was begun, so retain the same prepared saved peer and
+    // live clients. No native-context reset or foreign handle cancellation.
+    rc=PollPeerPreparation(now,true);if(rc)return rc;
+    rc=PersistLinkMarker(now);if(rc)return rc;
+    connection_requested_=false;last_connection_poll_ms_=0;
+    Log("RETRY_A5_RETRY: terminal callback plus two absent views; backoff complete; fresh preflight before dispatch");
+    return RequestConnection(); // repeats both list prechecks and evidence-history checks
+}
+#endif
 Result LibnxSession::PollLinkOnly(std::uint64_t now) {
+#ifdef ARMODULE_NATIVE_HCI_C2
+    if(connection_requested_)PollHciTrace(now);
+#endif
+#ifdef ARMODULE_NATIVE_PEER_C1
+    if(peer_nonce_ && !connection_requested_){const auto rc=PollPeerPreparation(now);if(R_FAILED(rc))return rc;}
+#endif
     if (scanning_) { const auto rc = PollScan(now); if (R_FAILED(rc)) return rc; }
     if (!connection_requested_) return 0;
+#ifdef ARMODULE_RETRY_A5
+    bool settling{};const auto early_rc=PollEarlyLinkRetry(now,settling);
+    if(early_rc || settling)return early_rc;
+#endif
     const auto hint = eventWait(&connection_event_, 0);
     if (R_FAILED(hint) && !Timeout(hint)) return hint;
     if (!last_connection_poll_ms_ || now - last_connection_poll_ms_ >= 500) {
@@ -813,13 +1209,24 @@ Result LibnxSession::PollLinkOnly(std::uint64_t now) {
             if (found || (have_connection_ && connection_ != connections[i].connection_handle)) return Invalid();
             found = true;
             if (!have_connection_) {
+#ifdef ARMODULE_WAKE_A3
+                if(std::find(retired_connections_.begin(),retired_connections_.end(),connections[i].connection_handle)!=retired_connections_.end()){
+                    Log("WAKE_A3 numeric connection id reused after verified retirement; not a session identity; fresh nonce/security required");
+                }
+#endif
                 connection_ = connections[i].connection_handle; have_connection_ = true;
                 linked_ms_ = armTicksToNs(armGetSystemTick()) / 1000000;
                 Log("Exact configured target handle=%lu observed; fingerprint_unverified=1 authenticated_identity_unverified=1 driver_client_ownership_unproven=1", static_cast<unsigned long>(connection_));
                 const auto stop = StopOwnScan(); if (R_FAILED(stop)) return stop;
             }
         }
-        if (have_connection_ && !found) { Log("LINK_ONLY target handle no longer present; no reconnect"); return Invalid(); }
+        if (have_connection_ && !found) {
+#ifdef ARMODULE_WAKE_A3
+            completed_link_lost_=Ready() && bond_saved_ && bond_started_;
+            if(completed_link_lost_)decoder_.Disconnect();
+#endif
+            Log("LINK_ONLY target handle no longer present; no reconnect"); return Invalid();
+        }
     }
     if (!have_connection_ && now - requested_ms_ >= 30000) {
         Log("LINK_ONLY request timed out; cannot cancel pending address; reboot required, persistent marker retained");
@@ -930,7 +1337,63 @@ Result LibnxSession::ReadEnrollmentContext(std::uint64_t instance,EnrollmentCont
         static_cast<unsigned long>(out.before_binding),static_cast<unsigned long>(out.after_binding));
     return 0; // Failed getters/binding checks remain visible in the record.
 }
+#ifdef ARMODULE_NATIVE_OWNER
+arnativebond::OwnerResult LibnxSession::NativeBondOnce(std::uint64_t sequence,const arnativebond::OwnerEnvironment &environment,arnativebond::NativeIntent persist) {
+    using namespace arnativebond;
+    OwnerResult out{};out.sequence=sequence;
+    struct Backend {
+        LibnxSession &owner;const OwnerEnvironment &env;NativeIntent persist;OwnerResult &out;
+        std::uint64_t Now(){return armTicksToNs(armGetSystemTick())/1000000;}
+        bool Supported(){return hosversionGet()==MAKEHOSVERSION(22,5,0);}
+        bool OperatorConfirmed(){return out.sequence!=0;}
+        void Close(){} // Borrowed clients remain owned until normal cleanup.
+        Result Open(){return owner.native_open_ && owner.native_.Active()?0:Refusal;}
+        Result Enabled(u8 &v){return owner.native_.BondEnabled(v);}
+        Result Request(BtdrvAddress target){return owner.native_.BondRequest(target);}
+        bool PersistIntent(const Record &r){return persist && persist(r);}
+        Result Guard(BtdrvAddress target,Binding &binding){
+            binding={};if(out.count>=out.checks.size())return Refusal;
+            auto &d=out.checks[out.count++];d.call=out.count;d.begin_ms=Now();d.instance=env.status.instance;
+            const auto finish=[&](OwnerStage stage,Result rc){d.stage=unsigned(stage);d.result=rc;d.end_ms=Now();d.checksum=OwnerChecksum(d);return rc;};
+            auto &s=owner;
+            if(!env.pad_attached || !env.log_healthy || !s.input_budget_.Sustained() || !s.initialized_ ||
+               !s.native_open_ || !s.native_requests_ || !s.native_.Active() || !s.gatt_.SystemOpen() ||
+               !s.input_diagnostic_ || !s.have_connection_ || !s.connection_ || s.connection_==0xffffffff ||
+               !s.Ready() || !s.fingerprint_logged_ || !s.security_read_logged_ || !s.inputs_loaded_ ||
+               s.Buttons() || s.input_budget_.Expired(s.linked_ms_,Now()) ||
+               std::memcmp(target.address,s.target_.address,sizeof target.address))return finish(OwnerStage::LocalState,Refusal);
+            if(!SystemReadyBinding(env.status,env.startup,env.context,Now(),s.connection_))return finish(OwnerStage::Metadata,Refusal);
+            d.user_result=s.CheckCurrentTarget();if(d.user_result)return finish(OwnerStage::UserBinding,d.user_result);
+            std::array<BtdrvBleConnectionInfo,16> list{};u8 count{};
+            d.system_result=btmBleGetConnectionState(list.data(),list.size(),&count);
+            if(d.system_result)return finish(OwnerStage::SystemGetter,d.system_result);
+            d.count=count;if(count>=list.size())return finish(OwnerStage::ListBounds,Refusal);
+            std::array<araudit::Connection,16> normalized{};araudit::Address configured{};
+            std::memcpy(configured.data(),target.address,configured.size());
+            for(unsigned i=0;i<count;++i){normalized[i].handle=list[i].connection_handle;std::memcpy(normalized[i].address.data(),list[i].addr.address,configured.size());}
+            araudit::ConnectionQuery q{};q.list.result=0;araudit::CountConnections(q,configured,normalized,count);
+            d.matches=q.list.matches;d.invalid=q.list.invalid;d.handle=q.target_handle;
+            if(q.list.result || q.list.invalid)return finish(OwnerStage::ListInvalid,Refusal);
+            if(q.list.matches!=1 || q.target_handle!=s.connection_)return finish(OwnerStage::TargetBinding,Refusal);
+            d.user_result=s.CheckCurrentTarget();if(d.user_result)return finish(OwnerStage::UserBinding,d.user_result);
+            if(!SystemReadyBinding(env.status,env.startup,env.context,Now(),s.connection_) || s.Buttons())return finish(OwnerStage::Metadata,Refusal);
+            binding={env.status.instance,s.connection_};return finish(OwnerStage::Passed,0);
+        }
+    } backend{*this,environment,persist,out};
+    out.trial=native_bond_trial_.Attempt(backend,target_);
+    // Even a pre-guard refusal is correlated with the command's exact owner.
+    if(!out.trial.instance){out.trial.instance=environment.status.instance;out.trial.checksum=Checksum(out.trial);}
+    out.checksum=OwnerResultChecksum(out);return out;
+}
+#endif
 Result LibnxSession::EnrollOnce(std::uint64_t instance,EnrollmentIntent persist_intent) {
+#ifdef ARMODULE_RECONNECT_CHECK
+    // The reconnect experiment never repeats explicit managed enrollment.
+    // Horizon may still negotiate security internally for normal GATT requests;
+    // successful input alone must not be reported as saved-key reuse.
+    (void)instance; (void)persist_intent;
+    return Invalid();
+#else
     if(enrollment_consumed_)return Invalid();
     enrollment_consumed_=true;enrollment_.instance=instance;
     enrollment_.requested_ms=armTicksToNs(armGetSystemTick())/1000000;
@@ -962,6 +1425,7 @@ Result LibnxSession::EnrollOnce(std::uint64_t instance,EnrollmentIntent persist_
         system_enrollment_?"btmBlePairDevice":"btmuBlePairDevice",static_cast<unsigned long>(rc));
     if(R_FAILED(rc)){EnrollmentFinish(EnrollmentState::Failed,rc);return rc;}
     enrollment_.deadline_ms=now+10000;EnrollmentFinish(EnrollmentState::Accepted,0);return 0;
+#endif
 }
 void LibnxSession::PollEnrollment(std::uint64_t now) {
     if(enrollment_.state!=unsigned(EnrollmentState::Accepted))return;
@@ -975,6 +1439,51 @@ void LibnxSession::PollEnrollment(std::uint64_t now) {
     else if(enrollment_.after_matches==1)EnrollmentFinish(EnrollmentState::Listed,0);
     else enrollment_.checksum=EnrollmentChecksum(enrollment_);
 }
+#ifdef ARMODULE_CENTRAL_BOND_B1
+Result LibnxSession::PollCentralBond(bool &ready) {
+    ready=false;bool present{};
+    auto rc=ReadDisconnectPresence(present,true);
+    if(R_FAILED(rc) || !present)return R_FAILED(rc)?rc:Invalid();
+    if(!bond_started_){
+#if defined(ARMODULE_SAVED_DISCOVERY_B3) || defined(ARMODULE_NATIVE_PEER_C1)
+        central_bond::Status before{};
+        rc=serviceDispatch(&bond_service_,central_bond::StatusCommand,
+            .buffer_attrs={SfBufferAttr_HipcPointer|SfBufferAttr_Out},.buffers={{&before,sizeof before}});
+        if(R_FAILED(rc) || before.magic!=central_bond::Magic || before.version!=central_bond::Version ||
+           before.store!=central_bond::Store::Saved || !bond_saved_){
+            Log("B3_SAVED_BOND_REQUIRED: native request withheld; no enrollment fallback");
+            return R_FAILED(rc)?rc:Invalid();
+        }
+#endif
+        bond_started_=true;bond_nonce_=std::uint32_t(armGetSystemTick());if(!bond_nonce_)bond_nonce_=1;
+        // sf::ClientProcessId occupies a raw u64 as well as requesting the
+        // kernel PID descriptor. The server replaces this zero with kernel PID.
+        struct {u64 placeholder_pid;central_bond::Begin begin;} request{0,{bond_nonce_,connection_,linked_ms_}};
+        rc=serviceDispatchIn(&bond_service_,central_bond::BeginCommand,request,.in_send_pid=true);
+        Log("B1_BEGIN mode=%s result=%08lx; wait private native completion and storage readback",
+            bond_saved_?"STORED_KEY":"ENROLL_ONCE",static_cast<unsigned long>(rc));
+        if(R_FAILED(rc))return rc;
+    }
+    central_bond::Status state{};
+    rc=serviceDispatch(&bond_service_,central_bond::StatusCommand,
+        .buffer_attrs={SfBufferAttr_HipcPointer|SfBufferAttr_Out},.buffers={{&state,sizeof state}});
+    if(R_FAILED(rc))return rc;
+    if(state.magic!=central_bond::Magic || state.version!=1 || state.nonce!=bond_nonce_ ||
+       state.connection!=connection_ || state.owner_epoch!=linked_ms_)return Invalid();
+    if(bond_last_phase_!=unsigned(state.phase)){
+        bond_last_phase_=unsigned(state.phase);
+        Log("B1_STATE phase=%u store=%u native_status=%u encrypted=%u key_bytes=%u result=%08lx",
+            unsigned(state.phase),unsigned(state.store),state.native_status,state.encrypted,state.key_bytes,
+            static_cast<unsigned long>(state.result));
+    }
+    if(state.phase==central_bond::Phase::Failed || state.phase==central_bond::Phase::Cancelled)
+        return state.result?state.result:Invalid();
+    ready=state.phase==central_bond::Phase::Ready && state.store==central_bond::Store::Saved &&
+        state.encrypted==1 && state.key_bytes==16 && !state.native_status && !state.result;
+    if(ready)Log("B1_SECURITY_READY: native completion verified; private bond saved/readback verified. Reboot reconnect still requires device test.");
+    return 0;
+}
+#endif
 Result LibnxSession::PollIdentity(std::uint64_t now) {
     if (!client_.Tick(now)) return Invalid(); // Expire before consuming completion.
     if (input_diagnostic_ && input_budget_.Expired(linked_ms_,now)) {
@@ -994,6 +1503,12 @@ Result LibnxSession::PollIdentity(std::uint64_t now) {
             Log("FINGERPRINT_VERIFIED: VID0171/PID0427 and exact149-byte HID map matched; NOT authenticated identity/bonding/button support.");
         }
         if (!input_diagnostic_) return 0;
+#ifdef ARMODULE_CENTRAL_BOND_B1
+        bool bond_ready{};
+        const auto bond_rc=PollCentralBond(bond_ready);
+        if(R_FAILED(bond_rc))return bond_rc;
+        if(!bond_ready)return 0;
+#endif
         auto inventory_rc = ReadInputInventory("before_security", false);
         if (R_FAILED(inventory_rc)) return inventory_rc;
         if (!client_.BeginSecurityRead()) return Invalid();
@@ -1069,26 +1584,249 @@ Result LibnxSession::PollIdentity(std::uint64_t now) {
     // Admit immediately after the final successful CCC completion, before the
     // caller attaches a pad. Late completions cannot extend expired setup.
     if (Ready() && !input_budget_.AdmitReady(linked_ms_,armTicksToNs(armGetSystemTick()) / 1000000)) return Invalid();
+#ifdef ARMODULE_HID_INFO_H1
+    PollHidInformation(armTicksToNs(armGetSystemTick()) / 1000000);
+#endif
     return 0;
 }
-void LibnxSession::Close() {
+#ifdef ARMODULE_HID_INFO_H1
+void LibnxSession::PollHidInformation(std::uint64_t now) {
+    if (hid_information_pending_ && (now < hid_information_started_ms_ || now-hid_information_started_ms_ >= 3000)) {
+        hid_information_pending_ = false;
+        Log("HID_INFO_H1_TIMEOUT: no value accepted; navigation unchanged, no retry");
+    }
+    if (!Ready() || !fingerprint_logged_ || !security_read_logged_ || !inputs_loaded_ ||
+        !native_requests_ || !native_open_ || pending_operation_ || hid_information_attempted_) return;
+    if (!hid_information_ready_ms_) { hid_information_ready_ms_=now; return; }
+    if (now < hid_information_ready_ms_ || now-hid_information_ready_ms_ < 5000 || Buttons()) return;
+    hid_information_attempted_ = true;
+    if (!hid_information_.handle) return;
+    // Revalidate exact live target immediately before the one read. No scan,
+    // pairing, security escalation, Control Point or protocol-mode request.
+    const auto bound = CheckCurrentTarget();
+    if (R_FAILED(bound)) { Log("HID_INFO_H1_SKIPPED: live binding failed"); return; }
+    const auto service = Id(client_.HidService()), characteristic = Id(hid_information_);
+    hid_information_connection_ = connection_;
+    hid_information_generation_ = client_.Generation();
+    hid_information_started_ms_ = armTicksToNs(armGetSystemTick())/1000000;
+    hid_information_pending_ = true;
+    const auto rc = native_.ReadHidInformation(connection_,&service,&characteristic);
+    Log("HID_INFO_H1_REQUEST: result=%08lx conn=%u generation=%u handle=%04x instance=%u auth_request=0; diagnostic_only=1",
+        static_cast<unsigned long>(rc),connection_,hid_information_generation_,hid_information_.handle,hid_information_.instance);
+    if (R_FAILED(rc)) hid_information_pending_ = false;
+}
+bool LibnxSession::CompleteHidInformation(const BtdrvBleEventInfo &event) {
+    const auto &op = event.client_notify;
+    if (op.type != 0 || ShortUuid(op.serv_uuid) != 0x1812 || ShortUuid(op.char_uuid) != 0x2a4a) return false;
+    const auto now = armTicksToNs(armGetSystemTick())/1000000;
+    if (!hid_information_pending_ || !Ready() || op.conn_id != hid_information_connection_ ||
+        connection_ != hid_information_connection_ || client_.Generation() != hid_information_generation_ ||
+        now < hid_information_started_ms_ || now-hid_information_started_ms_ >= 3000) {
+        Log("HID_INFO_H1_IGNORED: unsolicited, late or retired read response; no evidence accepted");
+        return true;
+    }
+    hid_information_pending_ = false;
+    HidInformation info{};
+    if (op.result || !DecodeHidInformation(op.data,op.size,info)) {
+        Log("HID_INFO_H1_NO_VALUE: result=%u size=%u; navigation unchanged, no retry",op.result,op.size);
+        return true;
+    }
+    char raw[9]{}; FormatHex(raw,sizeof raw,op.data,4);
+    Log("HID_INFO_H1_VALUE: raw=%s bcd_hid=%04x country=%u flags=%02x RemoteWake=%u NormallyConnectable=%u other_flags=%02x; host_wake_proven=0",
+        raw,info.bcd_hid,info.country,info.flags,info.RemoteWake(),info.NormallyConnectable(),info.OtherFlags());
+    return true;
+}
+#endif
+Result LibnxSession::ReleaseSubscriptions(bool trace_disconnect) {
+    Result first_error{};
+    for (std::size_t i = 0; i < subscription_count_; ++i) {
+        const auto &r = subscriptions_[i]; const auto service = Id(r.service), characteristic = Id(r.characteristic);
+        const auto binding = identity_test_ ? CheckCurrentTarget() : Result{};
+        if (trace_disconnect) Log("DISCONNECT_STEP stage=subscription_binding index=%lu Result=%08lx",
+            static_cast<unsigned long>(i),static_cast<unsigned long>(binding));
+        if (R_FAILED(binding)) {
+            Log("cleanup report deregistration skipped: configured address/handle no longer bound; no operation on a reassigned handle");
+            first_error = first_error ? first_error : Invalid();
+            break;
+        }
+        const auto rc = native_requests_ ? native_.Notify(r.connection,r.service.primary,&service,&characteristic,false)
+            : btLeClientDeregisterNotification(r.connection,r.service.primary,&service,&characteristic);
+        if (trace_disconnect) Log("DISCONNECT_STEP stage=subscription_deregister index=%lu Result=%08lx native=%u",
+            static_cast<unsigned long>(i),static_cast<unsigned long>(rc),native_requests_);
+        if (R_FAILED(rc)) {
+            Log("cleanup deregister own report failed: Result=%08lx",static_cast<unsigned long>(rc));
+            if (!first_error) first_error = rc;
+        }
+    }
+    subscription_count_ = 0;
+    return first_error;
+}
+Result LibnxSession::FinishDisconnect(Result result) {
+    disconnect_result_ = result;
+    disconnect_state_ = R_FAILED(result) ? DisconnectState::Failed : DisconnectState::Confirmed;
+    Log("OWNED_DISCONNECT %s Result=%08lx; bond records and pending marker untouched",
+        R_FAILED(result) ? "NOT_CONFIRMED" : "CONFIRMED_ABSENT",static_cast<unsigned long>(result));
+    if (R_SUCCEEDED(result)) have_connection_ = connection_requested_ = false;
+    return result;
+}
+Result LibnxSession::ReadDisconnectPresence(bool &present, bool require_both) {
+    present = false;
+    unsigned matching_views{};
+    // A successful empty user view alone has previously hidden a system link.
+    // Require both views through the existing clients, never reopen or adopt.
+    if (!gatt_.SystemOpen()) {
+        Log("DISCONNECT_STEP stage=system_client_guard Result=%08lx",static_cast<unsigned long>(Invalid()));
+        return Invalid();
+    }
+    for (const bool system : {true, false}) {
+        std::array<BtdrvBleConnectionInfo,16> entries{}; u8 count{};
+        const auto rc = system ? btmBleGetConnectionState(entries.data(),entries.size(),&count)
+            : btmuBleGetConnectionState(entries.data(),entries.size(),&count);
+        const auto view=system?0u:1u;
+        const char *label=system?"system_presence":"user_presence";
+        if (R_FAILED(rc)) {
+            Log("DISCONNECT_STEP stage=%s Result=%08lx count_untrusted=%u",label,static_cast<unsigned long>(rc),count);
+            return rc;
+        }
+        if (count >= entries.size()) {
+            Log("DISCONNECT_STEP stage=%s Result=%08lx guard=capacity count=%u",label,static_cast<unsigned long>(Invalid()),count);
+            return Invalid();
+        }
+        unsigned matches{};
+        for (std::size_t i=0;i<count;++i) {
+            const bool address = !std::memcmp(&entries[i].addr,&target_,sizeof target_);
+            const bool handle = entries[i].connection_handle == connection_;
+            if (address != handle) {
+                Log("DISCONNECT_STEP stage=%s Result=%08lx guard=rebound_or_recycled",label,static_cast<unsigned long>(Invalid()));
+                return Invalid(); // Rebound address or recycled handle.
+            }
+            if (address) ++matches;
+        }
+        if (matches > 1) {
+            Log("DISCONNECT_STEP stage=%s Result=%08lx guard=duplicate",label,static_cast<unsigned long>(Invalid()));
+            return Invalid();
+        }
+        const auto signature=std::uint32_t(count)|(std::uint32_t(matches)<<8);
+        if (disconnect_view_trace_[view]!=signature) {
+            Log("DISCONNECT_STEP stage=%s Result=00000000 count=%u owned_matches=%u",label,count,matches);
+            disconnect_view_trace_[view]=signature;
+        }
+        present = present || matches == 1;
+        matching_views += matches == 1;
+    }
+    if (require_both && matching_views != 2) return Invalid();
+    return 0;
+}
+Result LibnxSession::BeginOwnedDisconnect(std::uint64_t now) {
+    if (disconnect_state_ != DisconnectState::NotStarted) return disconnect_result_;
+    // This deliberately does not relax the existing one-shot/rearm policy.
+    // Unknown pending connects still need recovery, not a MAC-only disconnect.
+    ResetInput();
+    if (!initialized_ || !link_only_ || !identity_test_ || !now) {
+        Log("DISCONNECT_STEP stage=session_guard Result=%08lx initialized=%u link_only=%u identity=%u",
+            static_cast<unsigned long>(Invalid()),initialized_,link_only_,identity_test_);
+        return FinishDisconnect(Invalid());
+    }
+    if(enrollment_.state==unsigned(EnrollmentState::Accepted))EnrollmentFinish(EnrollmentState::Cancelled,Invalid());
+    auto rc = StopOwnScan();
+    Log("DISCONNECT_STEP stage=stop_scan Result=%08lx",static_cast<unsigned long>(rc));
+    if (R_FAILED(rc)) return FinishDisconnect(rc);
+#ifdef ARMODULE_RETRY_A5
+    if(early_request_completed_ && !have_connection_ && !bond_started_) {
+        bool absent{};rc=ReadTargetAbsent(absent);
+        if(rc || !absent)return FinishDisconnect(rc?rc:Invalid());
+        Log("RETRY_A5_TERMINAL_ABSENT: failed request completed; no disconnect command needed");
+        return FinishDisconnect(0);
+    }
+#endif
+    if (!connection_requested_ && !have_connection_) return FinishDisconnect(0);
+    if (!connection_requested_ || !have_connection_ || !connection_ || connection_==0xffffffff) {
+        Log("DISCONNECT_STEP stage=ownership_guard Result=%08lx requested=%u observed=%u",
+            static_cast<unsigned long>(Invalid()),connection_requested_,have_connection_);
+        return FinishDisconnect(Invalid());
+    }
+    bool present{};
+    rc = ReadDisconnectPresence(present);
+    if (R_FAILED(rc)) return FinishDisconnect(rc);
+    if (!present) { subscription_count_ = 0; return FinishDisconnect(0); }
+    rc = ReleaseSubscriptions(true);
+    if (R_FAILED(rc)) return FinishDisconnect(rc);
+    // Recheck BOTH views after deregistration. Never adopt a system-only
+    // connection or act on a disappeared/reassigned target. Our original
+    // request and pre-existing-target refusal remain required above.
+    rc = ReadDisconnectPresence(present, true);
+    Log("DISCONNECT_STEP stage=final_binding Result=%08lx",static_cast<unsigned long>(rc));
+    if (R_FAILED(rc)) return FinishDisconnect(rc);
+    disconnect_started_ms_ = armTicksToNs(armGetSystemTick()) / 1000000;
+    if (disconnect_started_ms_ < now || disconnect_started_ms_ - now > 2000) {
+        Log("DISCONNECT_STEP stage=dispatch_clock_guard Result=%08lx",static_cast<unsigned long>(Invalid()));
+        return FinishDisconnect(Invalid());
+    }
+    disconnect_polled_ms_ = disconnect_started_ms_;
+    // This is a background system client, not an applet. Use its already-open
+    // standard BTM service directly, not a rejected user call plus a fallback.
+    // Do not borrow an applet identity or open/initialize another radio client.
+    rc = btmBleDisconnect(connection_);
+    Log("DISCONNECT_STEP stage=btm_disconnect Result=%08lx handle=%lu",static_cast<unsigned long>(rc),static_cast<unsigned long>(connection_));
+    if (R_FAILED(rc)) return FinishDisconnect(rc);
+    disconnect_state_ = DisconnectState::Waiting;
+    Log("OWNED_DISCONNECT requested handle=%lu; completion pending, no retry or bond removal",
+        static_cast<unsigned long>(connection_));
+    return 0;
+}
+Result LibnxSession::PollOwnedDisconnect(std::uint64_t now) {
+    if (disconnect_state_ == DisconnectState::NotStarted) return Invalid();
+    if (disconnect_state_ != DisconnectState::Waiting) return disconnect_result_;
+    if (now < disconnect_polled_ms_ || now < disconnect_started_ms_) return FinishDisconnect(Invalid());
+    constexpr std::uint64_t timeout_ms=5000, interval_ms=100;
+    if (now-disconnect_started_ms_ >= timeout_ms) {
+        Log("DISCONNECT_STEP stage=completion_timeout Result=%08lx",static_cast<unsigned long>(MAKERESULT(Module_Kernel,KernelError_TimedOut)));
+        return FinishDisconnect(MAKERESULT(Module_Kernel,KernelError_TimedOut));
+    }
+    if (now-disconnect_polled_ms_ < interval_ms) return 0;
+    disconnect_polled_ms_=now;
+    bool present{};
+    const auto rc=ReadDisconnectPresence(present);
+    if (R_FAILED(rc)) return FinishDisconnect(rc);
+    const auto after=armTicksToNs(armGetSystemTick()) / 1000000;
+    if (after < now || after-disconnect_started_ms_ >= timeout_ms)
+        return FinishDisconnect(MAKERESULT(Module_Kernel,KernelError_TimedOut));
+    return present ? 0 : FinishDisconnect(0);
+}
+void LibnxSession::Close(bool sleeping) {
+#ifndef ARMODULE_WAKE_A3
+    (void)sleeping;
+#endif
+#ifdef ARMODULE_CENTRAL_BOND_B1
+    if(serviceIsActive(&bond_service_)){
+#ifdef ARMODULE_NATIVE_HCI_C2
+        if(connection_requested_ && !sleeping){
+            PollHciTrace(armTicksToNs(armGetSystemTick())/1000000,true);
+            Log("C2_HCI_SUMMARY records=%u read_failed=%u; zero records is inconclusive, not proof of no command",hci_logged_,unsigned(hci_read_failed_));
+        }
+#endif
+        if(!sleeping && (bond_started_
+#ifdef ARMODULE_NATIVE_PEER_C1
+           || peer_nonce_
+#endif
+        )){const u64 placeholder_pid=0;
+            (void)serviceDispatchIn(&bond_service_,central_bond::CancelCommand,placeholder_pid,.in_send_pid=true);}
+        serviceClose(&bond_service_);
+    }
+#endif
     if(enrollment_.state==unsigned(EnrollmentState::Accepted))EnrollmentFinish(EnrollmentState::Cancelled,Invalid());
     if (!initialized_) return;
     const auto cleanup = [&](const char *operation, Result rc) {
         if (R_FAILED(rc)) Log("cleanup %s failed: Result=%08lx", operation, static_cast<unsigned long>(rc));
     };
-    cleanup("stop own filtered scan", StopOwnScan());
-    for (std::size_t i = 0; i < subscription_count_; ++i) {
-        const auto &r = subscriptions_[i]; const auto service = Id(r.service), characteristic = Id(r.characteristic);
-        if (identity_test_ && R_FAILED(CheckCurrentTarget())) {
-            Log("cleanup report deregistration skipped: configured address/handle no longer bound; no operation on a reassigned handle");
-            break;
-        }
-        cleanup("deregister own report", native_requests_?native_.Notify(r.connection,r.service.primary,&service,&characteristic,false):btLeClientDeregisterNotification(r.connection, r.service.primary, &service, &characteristic));
-    }
-    subscription_count_ = 0;
+    if(!sleeping){
+        cleanup("stop own filtered scan", StopOwnScan());
+        cleanup("release subscriptions", ReleaseSubscriptions());
+    } else { subscription_count_=0;Log("WAKE_A3_SLEEP: retire local subscriptions without stale-handle radio operations; absence must be checked after wake"); }
     if (link_only_) {
-        if (link_attempted_) Log("LINK_ONLY close: no MAC-only disconnect/adoption; pending marker retained; reboot required regardless of result");
+        if (disconnect_state_ == DisconnectState::Waiting) FinishDisconnect(Invalid());
+        if (!sleeping && link_attempted_ && disconnect_state_ != DisconnectState::Confirmed)
+            Log("LINK_ONLY close: disconnect not confirmed; no MAC-only fallback; pending marker retained");
     } else if (have_connection_) cleanup("disconnect target", btdevDisconnectFromGattServer(connection_));
     else if (connection_requested_) {
         // Catch a request that completed after our last poll. A still-pending
@@ -1116,4 +1854,66 @@ void LibnxSession::Close() {
     // Do not erase a failed-stop ownership marker before logging it.
     if (scanning_) Log("WARNING: owned scan stop failed during exit; another scan must not be started until system recovery");
 }
+#ifdef ARMODULE_WAKE_A3
+bool LibnxSession::RetireForSleep(){
+    if(sleep_retired_ || !Ready() || !bond_saved_ || !bond_started_ || !have_connection_ || !connection_requested_ ||
+       scanning_ || !connection_ || retired_count_>=retired_connections_.size())return false;
+    retired_connections_[retired_count_++]=connection_;sleep_retired_=true;
+    Close(true);return true;
+}
+Result LibnxSession::ResumeAfterSleep(std::uint64_t now,bool &ready){
+    ready=false;
+    if(!sleep_retired_ || initialized_ || native_open_ || gatt_.SystemOpen() || !now)return Invalid();
+    if(!wake_begin_)wake_begin_=now;
+    if(now<wake_begin_ || now-wake_begin_>=10000)return Invalid();
+    Service service{};auto rc=smGetService(&service,"mc");if(rc)return rc;
+    central_bond::WakeStatus w{};
+    rc=serviceDispatch(&service,central_bond::WakeStatusCommand,
+        .buffer_attrs={SfBufferAttr_HipcPointer|SfBufferAttr_Out},.buffers={{&w,sizeof w}});
+    if(rc || w.magic!=0x33575241 || w.version!=1 || w.reserved || w.ready>1){serviceClose(&service);return rc?rc:Invalid();}
+    if(!wake_sent_){
+        if(!w.ready){serviceClose(&service);return 0;}
+        if(!w.remaining || !w.serial || w.nonce!=bond_nonce_ || w.connection!=connection_ || w.owner_epoch!=linked_ms_){serviceClose(&service);return Invalid();}
+        rc=btmuInitialize();if(rc){serviceClose(&service);return rc;}
+        rc=btmInitialize();
+        if(rc){btmuExit();serviceClose(&service);return rc;}
+        bool absent=true;
+        for(bool system:{true,false}){
+            std::array<BtdrvBleConnectionInfo,16> entries{};u8 count{};
+            rc=system?btmBleGetConnectionState(entries.data(),entries.size(),&count):btmuBleGetConnectionState(entries.data(),entries.size(),&count);
+            if(rc || count>=entries.size()){if(!rc)rc=Invalid();break;}
+            for(unsigned i=0;i<count;++i)if(!std::memcmp(&entries[i].addr,&target_,sizeof target_))absent=false;
+        }
+        btmExit();btmuExit();
+        if(rc){serviceClose(&service);return rc;}
+        if(!absent){absence_since_=0;serviceClose(&service);return 0;}
+        if(!absence_since_){absence_since_=now;serviceClose(&service);return 0;}
+        if(now<absence_since_){serviceClose(&service);return Invalid();}
+        if(now-absence_since_<250){serviceClose(&service);return 0;}
+        struct{u64 placeholder_pid;central_bond::WakeRequest request;} req{0,{w.serial,w.nonce,w.connection,0,w.owner_epoch}};
+        rc=serviceDispatchIn(&service,central_bond::WakeCommand,req,.in_send_pid=true);
+        if(rc){serviceClose(&service);return rc;}
+        wake_sent_=true;Log("WAKE_A3 epoch admitted after two absent system/user views; waiting for saved-record reload");
+    }
+    central_bond::Status s{};
+    rc=serviceDispatch(&service,central_bond::StatusCommand,
+        .buffer_attrs={SfBufferAttr_HipcPointer|SfBufferAttr_Out},.buffers={{&s,sizeof s}});
+    serviceClose(&service);
+    if(rc || s.magic!=central_bond::Magic || s.version!=1 || s.result)return rc?rc:Invalid();
+    if(s.store==central_bond::Store::Unknown)return 0;
+    if(s.store!=central_bond::Store::Saved || s.generation!=peer_generation_ || s.phase!=central_bond::Phase::Idle)return Invalid();
+    const auto ids=retired_connections_;const auto count=retired_count_;const auto log=logger_;
+#ifdef ARMODULE_HID_INFO_H1
+    const auto information_attempted=hid_information_attempted_;
+#endif
+    // All SDK-owned handles were closed; these objects have no native function
+    // callback references. Companion encryption contexts are separately retained.
+    this->~LibnxSession();new(this)LibnxSession(log,true,true,true,true,true,true);
+#ifdef ARMODULE_HID_INFO_H1
+    hid_information_attempted_=information_attempted;
+#endif
+    retired_connections_=ids;retired_count_=count;ready=true;
+    Log("WAKE_A3 fresh local session ready; saved bond unchanged; no pairing");return 0;
+}
+#endif
 }

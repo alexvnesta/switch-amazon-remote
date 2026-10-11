@@ -1,0 +1,31 @@
+diff --git a/mc_mitm/source/mc/mc_service.hpp b/mc_mitm/source/mc/mc_service.hpp
+--- a/mc_mitm/source/mc/mc_service.hpp
++++ b/mc_mitm/source/mc/mc_service.hpp
+@@ -34,5 +34,6 @@
+     AMS_SF_METHOD_INFO(C, H, 65007, Result, ProbeNativeMetadata, (u32 nonce), (nonce)) \
+     AMS_SF_METHOD_INFO(C, H, 65008, Result, GetNativeMetadata, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
++    AMS_SF_METHOD_INFO(C, H, 65009, Result, GetBondProperties, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+ 
+ AMS_SF_DEFINE_INTERFACE(ams::mc, IMissionControlInterface, AMS_MISSION_CONTROL_INTERFACE_INFO, 0x30eba3d4)
+ 
+@@ -53,5 +54,6 @@
+             Result ProbeNativeMetadata(u32 nonce);
+             Result GetNativeMetadata(const sf::OutPointerBuffer &out_buffer);
++            Result GetBondProperties(const sf::OutPointerBuffer &out_buffer);
+     };
+     static_assert(IsIMissionControlInterface<MissionControlService>);
+ 
+diff --git a/mc_mitm/source/mc/mc_service.cpp b/mc_mitm/source/mc/mc_service.cpp
+--- a/mc_mitm/source/mc/mc_service.cpp
++++ b/mc_mitm/source/mc/mc_service.cpp
+@@ -136,5 +136,10 @@
+         R_SUCCEED();
+     }
++    Result MissionControlService::GetBondProperties(const sf::OutPointerBuffer &out_buffer) {
++        if (!amazon_observer::ReadBondProperties(out_buffer.GetPointer(), out_buffer.GetSize()))
++            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
++        R_SUCCEED();
++    }
+ 
+ 
+ 

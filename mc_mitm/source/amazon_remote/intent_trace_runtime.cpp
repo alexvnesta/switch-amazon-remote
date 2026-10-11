@@ -60,7 +60,7 @@ void Observe(std::uint32_t command, std::uint64_t program, std::uint64_t process
 bool Pop(::amazon_remote::IntentRecord &out) { return g_trace.Pop(out); }
 void SnapshotInto(::amazon_remote::IntentCounters &out) { g_trace.SnapshotInto(out); }
 void ObserveManagedHeader(std::uint32_t type, const void *event, std::size_t size, bool configured_address_hint) {
-    if (!g_headers.Enabled() || type != 6) return;
+    if (!g_headers.Enabled() || !::amazon_remote::IsBleHeaderEvent(type)) return;
     const auto boot_ms = os::GetSystemTick().ToTimeSpan().GetMilliSeconds();
     if (!CheckWindow(static_cast<u64>(boot_ms))) return;
     (void)g_headers.Observe(type, event, size, static_cast<std::uint64_t>(boot_ms), configured_address_hint);

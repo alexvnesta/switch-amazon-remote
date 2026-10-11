@@ -1,0 +1,123 @@
+--- a/mc_mitm/system_module.mk
++++ b/mc_mitm/system_module.mk
+@@ -4,7 +4,7 @@
+ THIS_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
+ CURRENT_DIRECTORY := $(abspath $(dir $(THIS_MAKEFILE)))
+ include $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../lib/Atmosphere-libs/config/templates/stratosphere.mk
+-CXXFLAGS += -DARMODULE_CENTRAL_BOND_B1 -DARMODULE_NATIVE_PEER_C1 -DARMODULE_NATIVE_HCI_C2
++CXXFLAGS += -DARMODULE_CENTRAL_BOND_B1 -DARMODULE_NATIVE_PEER_C1 -DARMODULE_NATIVE_HCI_C2 -DARMODULE_WAKE_A3
+ 
+ ATMOSPHERE_SYSTEM_MODULE_TARGETS := nsp
+ 
+--- a/mc_mitm/source/mc/mc_service.hpp
++++ b/mc_mitm/source/mc/mc_service.hpp
+@@ -19,6 +19,14 @@
+ #include "../amazon_remote/central_bond_wire.hpp"
+ #include "../bluetooth_mitm/bluetooth/bluetooth_types.hpp"
+ 
++#ifdef ARMODULE_WAKE_A3
++#define AMS_MISSION_CONTROL_WAKE_A3_INTERFACE_INFO(C, H) \
++    AMS_SF_METHOD_INFO(C, H, 65016, Result, ResumeSavedSession, (sf::ClientProcessId pid, ::amazon_remote::central_bond::WakeRequest request), (pid, request)) \
++    AMS_SF_METHOD_INFO(C, H, 65017, Result, GetWakeStatus, (const sf::OutPointerBuffer &out_buffer), (out_buffer))
++#else
++#define AMS_MISSION_CONTROL_WAKE_A3_INTERFACE_INFO(C, H)
++#endif
++
+ #define AMS_MISSION_CONTROL_INTERFACE_INFO(C, H)                                                                                                                                      \
+     AMS_SF_METHOD_INFO(C, H, 0, Result, GetVersion,            (sf::Out<u32> version),                                                                  (version)                   ) \
+     AMS_SF_METHOD_INFO(C, H, 1, Result, GetBuildVersionString, (sf::Out<ams::mc::VersionString> version),                                               (version)                   ) \
+@@ -42,6 +50,7 @@
+     AMS_SF_METHOD_INFO(C, H, 65013, Result, PrepareSavedPeer, (sf::ClientProcessId pid, ::amazon_remote::central_bond::PreparePeer request), (pid, request)) \
+     AMS_SF_METHOD_INFO(C, H, 65014, Result, GetSavedPeerStatus, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+     AMS_SF_METHOD_INFO(C, H, 65015, Result, GetHciStatusTrace, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
++    AMS_MISSION_CONTROL_WAKE_A3_INTERFACE_INFO(C, H)
+ 
+ AMS_SF_DEFINE_INTERFACE(ams::mc, IMissionControlInterface, AMS_MISSION_CONTROL_INTERFACE_INFO, 0x30eba3d4)
+ 
+@@ -71,6 +80,10 @@
+             Result PrepareSavedPeer(sf::ClientProcessId pid, ::amazon_remote::central_bond::PreparePeer request);
+             Result GetSavedPeerStatus(const sf::OutPointerBuffer &out_buffer);
+             Result GetHciStatusTrace(const sf::OutPointerBuffer &out_buffer);
++#ifdef ARMODULE_WAKE_A3
++            Result ResumeSavedSession(sf::ClientProcessId pid, ::amazon_remote::central_bond::WakeRequest request);
++            Result GetWakeStatus(const sf::OutPointerBuffer &out_buffer);
++#endif
+     };
+     static_assert(IsIMissionControlInterface<MissionControlService>);
+ 
+--- a/mc_mitm/source/mc/mc_service.cpp
++++ b/mc_mitm/source/mc/mc_service.cpp
+@@ -21,6 +21,16 @@
+ #include "../amazon_remote/central_bond_runtime.hpp"
+ 
+ namespace ams::mc {
++#ifdef ARMODULE_WAKE_A3
++    Result MissionControlService::ResumeSavedSession(sf::ClientProcessId pid, ::amazon_remote::central_bond::WakeRequest request) {
++        if(!amazon_observer::ResumeSavedSession(pid.GetValue().value,request))return MAKERESULT(Module_Libnx,LibnxError_BadInput);
++        R_SUCCEED();
++    }
++    Result MissionControlService::GetWakeStatus(const sf::OutPointerBuffer &out_buffer) {
++        if(!central_bond_runtime::ReadWakeStatus(out_buffer.GetPointer(),out_buffer.GetSize()))return MAKERESULT(Module_Libnx,LibnxError_BadInput);
++        R_SUCCEED();
++    }
++#endif
+     Result MissionControlService::GetHciStatusTrace(const sf::OutPointerBuffer &out_buffer) {
+         if(!central_bond_runtime::ReadHciTrace(out_buffer.GetPointer(),out_buffer.GetSize()))return MAKERESULT(Module_Libnx,LibnxError_BadInput);
+         R_SUCCEED();
+--- a/mc_mitm/source/mcmitm_main.cpp
++++ b/mc_mitm/source/mcmitm_main.cpp
+@@ -104,10 +104,19 @@
+         // Create timer event for periodically checking whether the current running application has changed
+         os::TimerEvent timer_event(os::EventClearMode_ManualClear);
+         timer_event.StartPeriodic(ams::TimeSpan::FromSeconds(1), ams::TimeSpan::FromSeconds(1));
++#ifdef ARMODULE_WAKE_A3
++        // Only active saved-peer/security work uses the faster cadence.
++        // Generic process switching and diagnostic maintenance remain at 1 Hz.
++        os::TimerEvent handshake_timer_event(os::EventClearMode_ManualClear);
++        handshake_timer_event.StartPeriodic(ams::TimeSpan::FromMilliSeconds(100), ams::TimeSpan::FromMilliSeconds(100));
++#endif
+ 
+         os::MultiWaitType wait_manager;
+         os::MultiWaitHolderType holder_pm_module;
+         os::MultiWaitHolderType holder_proc_monitor;
++#ifdef ARMODULE_WAKE_A3
++        os::MultiWaitHolderType holder_handshake;
++#endif
+ 
+         os::InitializeMultiWait(&wait_manager);
+ 
+@@ -118,6 +127,11 @@
+         os::InitializeMultiWaitHolder(&holder_proc_monitor, timer_event.GetBase());
+         os::SetMultiWaitHolderUserData(&holder_proc_monitor, 1);
+         os::LinkMultiWaitHolder(&wait_manager, &holder_proc_monitor);
++#ifdef ARMODULE_WAKE_A3
++        os::InitializeMultiWaitHolder(&holder_handshake, handshake_timer_event.GetBase());
++        os::SetMultiWaitHolderUserData(&holder_handshake, 2);
++        os::LinkMultiWaitHolder(&wait_manager, &holder_handshake);
++#endif
+ 
+         // Loop events until shutdown signal is received
+         bool shutdown = false;
+@@ -155,12 +169,22 @@
+                     mc::amazon_observer::Poll();
+                     break;
+ 
++#ifdef ARMODULE_WAKE_A3
++                case 2:
++                    handshake_timer_event.Clear();
++                    mc::amazon_observer::PollHandshake();
++                    break;
++#endif
++
+                 AMS_UNREACHABLE_DEFAULT_CASE();
+             }
+         }
+ 
+         // Stop the timer
+         timer_event.Stop();
++#ifdef ARMODULE_WAKE_A3
++        handshake_timer_event.Stop();
++#endif
+ 
+         // Wait for modules to terminate
+         mitm::WaitModules();

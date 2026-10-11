@@ -1,0 +1,185 @@
+--- a/mc_mitm/system_module.mk
++++ b/mc_mitm/system_module.mk
+@@ -6,6 +6,7 @@
+ include $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../lib/Atmosphere-libs/config/templates/stratosphere.mk
+ CXXFLAGS += -DARMODULE_CENTRAL_BOND_B1 -DARMODULE_NATIVE_PEER_C1 -DARMODULE_NATIVE_HCI_C2 -DARMODULE_WAKE_A3
+ CXXFLAGS += -DARMODULE_CONTROLLER_PASSIVE_P1
++CXXFLAGS += -DARMODULE_CONTROLLER_DEFERRED_D1
+ 
+ ATMOSPHERE_SYSTEM_MODULE_TARGETS := nsp
+ 
+--- a/mc_mitm/source/mc/mc_service.hpp
++++ b/mc_mitm/source/mc/mc_service.hpp
+@@ -51,7 +51,9 @@
+     AMS_SF_METHOD_INFO(C, H, 65014, Result, GetSavedPeerStatus, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+     AMS_SF_METHOD_INFO(C, H, 65015, Result, GetHciStatusTrace, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+     AMS_MISSION_CONTROL_WAKE_A3_INTERFACE_INFO(C, H) \
+-    AMS_SF_METHOD_INFO(C, H, 65020, Result, GetPassiveCapabilities, (const sf::OutPointerBuffer &out_buffer), (out_buffer))
++    AMS_SF_METHOD_INFO(C, H, 65020, Result, GetPassiveCapabilities, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
++    AMS_SF_METHOD_INFO(C, H, 65021, Result, BeginDeferredCapabilities, (u64 nonce), (nonce)) \
++    AMS_SF_METHOD_INFO(C, H, 65022, Result, GetDeferredCapabilities, (const sf::OutPointerBuffer &out_buffer), (out_buffer))
+ 
+ AMS_SF_DEFINE_INTERFACE(ams::mc, IMissionControlInterface, AMS_MISSION_CONTROL_INTERFACE_INFO, 0x30eba3d4)
+ 
+@@ -82,6 +84,8 @@
+             Result GetSavedPeerStatus(const sf::OutPointerBuffer &out_buffer);
+             Result GetHciStatusTrace(const sf::OutPointerBuffer &out_buffer);
+             Result GetPassiveCapabilities(const sf::OutPointerBuffer &out_buffer);
++            Result BeginDeferredCapabilities(u64 nonce);
++            Result GetDeferredCapabilities(const sf::OutPointerBuffer &out_buffer);
+ #ifdef ARMODULE_WAKE_A3
+             Result ResumeSavedSession(sf::ClientProcessId pid, ::amazon_remote::central_bond::WakeRequest request);
+             Result GetWakeStatus(const sf::OutPointerBuffer &out_buffer);
+--- a/mc_mitm/source/mc/mc_service.cpp
++++ b/mc_mitm/source/mc/mc_service.cpp
+@@ -20,8 +20,18 @@
+ #include "../amazon_remote/managed_observer_runtime.hpp"
+ #include "../amazon_remote/central_bond_runtime.hpp"
+ #include "../amazon_remote/controller_passive_runtime.hpp"
++#include "../amazon_remote/deferred_read_runtime.hpp"
+ 
+ namespace ams::mc {
++    Result MissionControlService::BeginDeferredCapabilities(u64 nonce) {
++        if(!deferred_read_runtime::Begin(nonce))return MAKERESULT(Module_Libnx,LibnxError_BadInput);
++        R_SUCCEED();
++    }
++    Result MissionControlService::GetDeferredCapabilities(const sf::OutPointerBuffer &out_buffer) {
++        if(!deferred_read_runtime::Read(out_buffer.GetPointer(),out_buffer.GetSize()))
++            return MAKERESULT(Module_Libnx,LibnxError_BadInput);
++        R_SUCCEED();
++    }
+     Result MissionControlService::GetPassiveCapabilities(const sf::OutPointerBuffer &out_buffer) {
+         if(!controller_passive_runtime::Read(out_buffer.GetPointer(),out_buffer.GetSize()))
+             return MAKERESULT(Module_Libnx,LibnxError_BadInput);
+--- a/mc_mitm/source/mcmitm_initialization.hpp
++++ b/mc_mitm/source/mcmitm_initialization.hpp
+@@ -20,5 +20,6 @@
+     void LaunchModules();
+     void WaitModules();
+     void WaitInitialized();
++    bool IsInitialized();
+ 
+ }
+--- a/mc_mitm/source/mcmitm_initialization.cpp
++++ b/mc_mitm/source/mcmitm_initialization.cpp
+@@ -143,5 +143,8 @@
+     void WaitInitialized() {
+         g_init_event.Wait();
+     }
++    bool IsInitialized() {
++        return g_init_event.TryWait();
++    }
+ 
+ }
+--- a/mc_mitm/source/mcmitm_version.cpp
++++ b/mc_mitm/source/mcmitm_version.cpp
+@@ -1 +1 @@
+-namespace ams::mc { unsigned int mc_version = 0x001000; const char *mc_build_name = "0.16.0-p1-cache-offline"; const char *mc_build_date = "2026-10-09 offline candidate"; }
++namespace ams::mc { unsigned int mc_version = 0x001000; const char *mc_build_name = "0.16.0-d1-deferred-offline"; const char *mc_build_date = "2026-10-09 offline candidate"; }
+--- a/mc_mitm/source/async/async.hpp
++++ b/mc_mitm/source/async/async.hpp
+@@ -25,6 +25,8 @@
+     void Finalize();
+ 
+     void QueueWork(AsyncFunction *function);
++    // Ownership transfers only on true. The caller deletes on rejection.
++    bool TryQueueWork(AsyncFunction *function);
+ 
+     #define MC_RUN_ASYNC(code) async::QueueWork(new async::AsyncFunction ([&]() -> ams::Result { code }));
+ 
+--- a/mc_mitm/source/async/async.cpp
++++ b/mc_mitm/source/async/async.cpp
+@@ -76,5 +76,8 @@
+     void QueueWork(AsyncFunction *function) {
+         os::SendMessageQueue(&g_work_queue, reinterpret_cast<uintptr_t>(function));
+     }
++    bool TryQueueWork(AsyncFunction *function) {
++        return function && os::TrySendMessageQueue(&g_work_queue, reinterpret_cast<uintptr_t>(function));
++    }
+ 
+ }
+--- a/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_events.hpp
++++ b/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_events.hpp
+@@ -25,6 +25,7 @@
+     };
+ 
+     Result Initialize();
++    bool IsReady();
+     void Finalize();
+ 
+ }
+--- a/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_events.cpp
++++ b/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_events.cpp
+@@ -14,6 +14,7 @@
+  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ #include <switch.h>
++#include <atomic>
+ #include "bluetooth_events.hpp"
+ #include "bluetooth_core.hpp"
+ #include "bluetooth_hid.hpp"
+@@ -22,6 +23,7 @@
+ namespace ams::bluetooth::events {
+ 
+     namespace {
++        constinit std::atomic<bool> g_ready{false};
+ 
+         constexpr s32 ThreadPriority = -11;
+         constexpr size_t ThreadStackSize = 0x2000;
+@@ -53,6 +55,7 @@
+                 os::LinkMultiWaitHolder(&g_manager, &g_holder_bt_ble);
+             }
+ 
++            g_ready.store(true,std::memory_order_release);
+             for (;;) {
+                 auto signalled_holder = os::WaitAny(&g_manager);
+                 switch (os::GetMultiWaitHolderUserData(signalled_holder)) {
+@@ -76,6 +79,7 @@
+ 
+     }
+ 
++    bool IsReady() {return g_ready.load(std::memory_order_acquire);}
+     Result Initialize() {
+         R_TRY(os::CreateThread(&g_thread,
+             EventHandlerThreadFunc,
+@@ -92,6 +96,7 @@
+     }
+ 
+     void Finalize() {
++        g_ready.store(false,std::memory_order_release);
+         os::DestroyThread(&g_thread);
+     }
+ 
+--- a/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_core.cpp
++++ b/mc_mitm/source/bluetooth_mitm/bluetooth/bluetooth_core.cpp
+@@ -21,6 +21,7 @@
+ #include "../../amazon_remote/managed_observer_runtime.hpp"
+ #include "../../amazon_remote/central_bond_runtime.hpp"
+ #include "../../amazon_remote/controller_passive_runtime.hpp"
++#include "../../amazon_remote/deferred_read_runtime.hpp"
+ 
+ namespace ams::bluetooth::core {
+ 
+@@ -132,7 +133,8 @@
+         std::scoped_lock lk(g_event_info_lock);
+ 
+         // Never expose a B1 private event, including a stale/spurious getter.
+-        if(static_cast<u32>(g_current_event_type)==0x6b || static_cast<u32>(g_current_event_type)==0x6c){
++        if(static_cast<u32>(g_current_event_type)==0x6b || static_cast<u32>(g_current_event_type)==0x6c ||
++           static_cast<u32>(g_current_event_type)==0x6d){
+             std::memset(buffer,0,size);*type=static_cast<bluetooth::EventType>(0);
+             return MAKERESULT(Module_Libnx,LibnxError_BadInput);
+         }
+@@ -200,6 +202,12 @@
+         {
+             std::scoped_lock lk(g_event_info_lock);
+             R_ABORT_UNLESS(btdrvGetEventInfo(&g_event_info, sizeof(bluetooth::EventInfo), &g_current_event_type));
++            if(ams::mc::deferred_read_runtime::Consume(static_cast<u32>(g_current_event_type),
++                    &g_event_info,sizeof(g_event_info))) {
++                std::memset(&g_event_info,0,sizeof(g_event_info));
++                g_current_event_type=static_cast<bluetooth::EventType>(0);
++                return;
++            }
+             if(ams::mc::controller_passive_runtime::Consume(static_cast<u32>(g_current_event_type),
+                     &g_event_info,sizeof(g_event_info))) {
+                 std::memset(&g_event_info,0,sizeof(g_event_info));

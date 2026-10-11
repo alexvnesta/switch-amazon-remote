@@ -7,10 +7,10 @@ namespace amazon_remote {
 class SessionBudget {
 public:
     static constexpr std::uint64_t SetupMs=90000, SustainedMs=1800000;
-    explicit SessionBudget(bool sustained=false):sustained_(sustained) {}
+    explicit SessionBudget(bool sustained=false, bool background=false):sustained_(sustained),background_(sustained && background) {}
     bool Expired(std::uint64_t linked,std::uint64_t now) const {
         if (now<linked) return true;
-        if (sustained_ && ready_) return now<ready_ms_ || now-ready_ms_>=SustainedMs;
+        if (sustained_ && ready_) return now<ready_ms_ || (!background_ && now-ready_ms_>=SustainedMs);
         return now-linked>=SetupMs;
     }
     bool AdmitReady(std::uint64_t linked,std::uint64_t now) {
@@ -21,7 +21,7 @@ public:
     bool Sustained() const { return sustained_; }
     void Reset() { ready_ms_=0;ready_=false; }
 private:
-    const bool sustained_;
+    const bool sustained_,background_;
     bool ready_{};
     std::uint64_t ready_ms_{};
 };

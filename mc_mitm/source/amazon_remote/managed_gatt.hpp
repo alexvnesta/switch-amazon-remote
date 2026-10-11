@@ -11,6 +11,7 @@ class ManagedGatt {
 public:
     explicit ManagedGatt(bool system=false):system_(system) {}
     bool System() const { return system_; }
+    bool SystemOpen() const { return system_ && open_; }
     Result Open() { if (!system_) return 0; const auto rc=btmInitialize();open_=R_SUCCEEDED(rc);return rc; }
     void Close() { if (open_) btmExit();open_=false; }
     Result PairDevice(u32 connection,BtdrvBleAdvertisePacketParameter param) {

@@ -22,6 +22,19 @@ public:
         return smGetService(&service_,"btdrv");
     }
     void Close() { serviceClose(&service_); }
+#ifdef ARMODULE_NATIVE_OWNER
+    bool Active() { return serviceIsActive(&service_); }
+    Result BondEnabled(u8 &out) {
+        return Active()?serviceDispatchOut(&service_,100,out):Invalid();
+    }
+    Result BondRequest(BtdrvAddress target) {
+        if(!Active() || hosversionGet()!=MAKEHOSVERSION(22,5,0))return Invalid();
+        const struct {BtdrvAddress target;u8 padding[2];u32 transport;} in{target,{0,0},2};
+        static_assert(sizeof(in)==12 && offsetof(decltype(in),transport)==8);
+        // Normal address-based request; field2 does not prove forced LE.
+        return serviceDispatchIn(&service_,10,in);
+    }
+#endif
     Result ReadCharacteristic(u32 connection,bool primary,const BtdrvGattId *s,const BtdrvGattId *c,u8 auth) {
         if (!serviceIsActive(&service_) || !connection || !primary || auth>1 ||
             !((Uuid(s,0x180a)&&Uuid(c,0x2a50)&&auth==0) || (Uuid(s,0x1812)&&Uuid(c,0x2a4b)))) return Invalid();
@@ -29,6 +42,16 @@ public:
         static_assert(sizeof in==0x38);
         return serviceDispatchIn(&service_,90,in);
     }
+#ifdef ARMODULE_HID_INFO_H1
+    // Separate read-only diagnostic. Does not expand the identity/read whitelist
+    // above, negotiate security, or admit any characteristic writes.
+    Result ReadHidInformation(u32 connection,const BtdrvGattId *s,const BtdrvGattId *c) {
+        if (!serviceIsActive(&service_) || !connection || !Uuid(s,0x1812) || !Uuid(c,0x2a4a)) return Invalid();
+        const struct { u8 primary,auth,pad[2];u32 connection;BtdrvGattId s,c; } in{1,0,{0},connection,*s,*c};
+        static_assert(sizeof in==0x38);
+        return serviceDispatchIn(&service_,90,in);
+    }
+#endif
     Result ReadDescriptor(u32 connection,bool primary,const BtdrvGattId *s,const BtdrvGattId *c,const BtdrvGattId *d,u8 auth) {
         if (!Input(connection,primary,s,c) || !Uuid(d,0x2908) || auth>1) return Invalid();
         const struct { u8 primary,auth,pad[2];u32 connection;BtdrvGattId s,c,d; } in{u8(primary),auth,{0},connection,*s,*c,*d};

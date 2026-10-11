@@ -1,0 +1,45 @@
+diff --git a/mc_mitm/source/mc/mc_service.hpp b/mc_mitm/source/mc/mc_service.hpp
+--- a/mc_mitm/source/mc/mc_service.hpp
++++ b/mc_mitm/source/mc/mc_service.hpp
+@@ -33,6 +33,7 @@
+     AMS_SF_METHOD_INFO(C, H, 65003, Result, EndTargetCapture, (), ()) \
+     AMS_SF_METHOD_INFO(C, H, 65004, Result, GetConnectionEvidence, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+     AMS_SF_METHOD_INFO(C, H, 65005, Result, GetCoreSecurityEvidence, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
++    AMS_SF_METHOD_INFO(C, H, 65006, Result, GetCaptureDiagnostics, (const sf::OutPointerBuffer &out_buffer), (out_buffer)) \
+ 
+ AMS_SF_DEFINE_INTERFACE(ams::mc, IMissionControlInterface, AMS_MISSION_CONTROL_INTERFACE_INFO, 0x30eba3d4)
+ 
+@@ -51,6 +52,7 @@
+             Result EndTargetCapture();
+             Result GetConnectionEvidence(const sf::OutPointerBuffer &out_buffer);
+             Result GetCoreSecurityEvidence(const sf::OutPointerBuffer &out_buffer);
++            Result GetCaptureDiagnostics(const sf::OutPointerBuffer &out_buffer);
+     };
+     static_assert(IsIMissionControlInterface<MissionControlService>);
+ 
+diff --git a/mc_mitm/source/mc/mc_service.cpp b/mc_mitm/source/mc/mc_service.cpp
+--- a/mc_mitm/source/mc/mc_service.cpp
++++ b/mc_mitm/source/mc/mc_service.cpp
+@@ -123,4 +123,10 @@
+ 
+ 
+ 
++    Result MissionControlService::GetCaptureDiagnostics(const sf::OutPointerBuffer &out_buffer) {
++        if (!amazon_observer::ReadCaptureDiagnostics(out_buffer.GetPointer(), out_buffer.GetSize()))
++            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
++        R_SUCCEED();
++    }
++
+ }
+diff --git a/mc_mitm/source/mcmitm_main.cpp b/mc_mitm/source/mcmitm_main.cpp
+--- a/mc_mitm/source/mcmitm_main.cpp
++++ b/mc_mitm/source/mcmitm_main.cpp
+@@ -132,7 +132,7 @@
+                                 shutdown = true;
+                                 [[fallthrough]];
+                             case psc::PmState_SleepReady:
+-                                mc::amazon_observer::Suspend();
++                                mc::amazon_observer::Suspend(shutdown);
+                                 break;
+                             default:
+                                 break;

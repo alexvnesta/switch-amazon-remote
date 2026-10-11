@@ -1,0 +1,60 @@
+diff --git a/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp b/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp
+--- a/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp
++++ b/mc_mitm/source/bluetooth_mitm/btdrv_mitm_service.cpp
+@@ -22,6 +22,7 @@
+ #include "../mcmitm_initialization.hpp"
+ #include "../controllers/controller_management.hpp"
+ #include "../amazon_remote/intent_trace_runtime.hpp"
++#include "../amazon_remote/filter_correction_runtime.hpp"
+ #include <switch.h>
+ 
+ namespace ams::mitm::bluetooth {
+@@ -40,9 +41,17 @@
+     Result BtdrvMitmService::StartBleScan() { return TraceBleIntent(55, nullptr, 0); }
+     Result BtdrvMitmService::StopBleScan() { return TraceBleIntent(56, nullptr, 0); }
+     Result BtdrvMitmService::AddBleScanFilterCondition(const sf::InPointerBuffer &buffer) {
++        u32 result{};
++        if (ams::mc::amazon_filter_correction::Correct(57,m_client_info.program_id.value,
++                m_client_info.process_id.value,buffer.GetPointer(),buffer.GetSize(),
++                m_forward_service.get(),btdrvForwardBleFilterCondition,result)) return result;
+         return TraceBleIntent(57, buffer.GetPointer(), buffer.GetSize());
+     }
+     Result BtdrvMitmService::DeleteBleScanFilterCondition(const sf::InPointerBuffer &buffer) {
++        u32 result{};
++        if (ams::mc::amazon_filter_correction::Correct(58,m_client_info.program_id.value,
++                m_client_info.process_id.value,buffer.GetPointer(),buffer.GetSize(),
++                m_forward_service.get(),btdrvForwardBleFilterCondition,result)) return result;
+         return TraceBleIntent(58, buffer.GetPointer(), buffer.GetSize());
+     }
+     Result BtdrvMitmService::DeleteBleScanFilter(u8 index) { return TraceBleIntent(59, &index, sizeof(index)); }
+diff --git a/mc_mitm/source/bluetooth_mitm/btdrv_shim.h b/mc_mitm/source/bluetooth_mitm/btdrv_shim.h
+--- a/mc_mitm/source/bluetooth_mitm/btdrv_shim.h
++++ b/mc_mitm/source/bluetooth_mitm/btdrv_shim.h
+@@ -28,6 +28,8 @@
+ Result btdrvRegisterHidReportEventFwd(Service* srv, Handle *out_handle);
+ Result btdrvGetHidReportEventInfoFwd(Service* srv, Handle *out_handle);
+ Result btdrvInitializeBleFwd(Service* srv, Handle *out_handle);
++// Exactly one existing-session request, only the reviewed filter add/delete.
++Result btdrvForwardBleFilterCondition(void *srv, u32 command, const void *filter, size_t size);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/mc_mitm/source/bluetooth_mitm/btdrv_shim.c b/mc_mitm/source/bluetooth_mitm/btdrv_shim.c
+--- a/mc_mitm/source/bluetooth_mitm/btdrv_shim.c
++++ b/mc_mitm/source/bluetooth_mitm/btdrv_shim.c
+@@ -15,6 +15,15 @@
+  */
+ #include "btdrv_shim.h"
+ #include <stratosphere/sf/sf_mitm_dispatch.h>
++
++Result btdrvForwardBleFilterCondition(void *srv, u32 command, const void *filter, size_t size) {
++    if (!srv || !filter || size!=sizeof(BtdrvBleAdvertiseFilter) || (command!=57 && command!=58))
++        return MAKERESULT(Module_Libnx,LibnxError_BadInput);
++    return serviceMitmDispatch((Service *)srv,command,
++        .buffer_attrs={SfBufferAttr_FixedSize|SfBufferAttr_HipcPointer|SfBufferAttr_In},
++        .buffers={{filter,size}}
++    );
++}
+ 
+ Result btdrvInitializeBluetoothFwd(Service* srv, Handle *out_handle) {
+     return serviceMitmDispatch(srv, 1, 
