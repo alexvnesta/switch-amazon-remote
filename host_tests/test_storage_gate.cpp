@@ -24,6 +24,9 @@ int main(){
         g.Request(0,0);assert(!g.Open());             // FullAwake request alone does not reopen
         g.Acknowledge(0);assert(g.Open());            // only the acknowledged FullAwake reopens
     }
+    {   StorageGate g;                                              // device-observed cycle (S1, R3 logs):
+        for(unsigned s:{1u,2u,3u,4u,1u}){Step(g,s);assert(!g.Open());} // sleep 1,2,3 then wake 4,1: closed
+        Step(g,0);assert(g.Open()); }                               // FullAwake ack, even seconds later
     {   StorageGate g;Step(g,1);Step(g,0);assert(g.Open()); }      // MinimumAwake and back
     {   StorageGate g;Step(g,5);assert(!g.Open()); }                // shutdown stays closed
     {   StorageGate g;Step(g,0,0xdead,0,false);assert(!g.Open());   // failed getter: no ack
