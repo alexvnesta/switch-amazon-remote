@@ -52,7 +52,9 @@ int main(int,char**) {
         if(!last_draw || now-last_draw>=250) {
             consoleClear();
 #ifdef ARMODULE_AUTOMATIC_A2
-#ifdef ARMODULE_HID_INFO_H1
+#ifdef ARMODULE_SETUP_SLEEP_R3
+            std::printf("AMAZON REMOTE  |  SETUP R3\n\n");
+#elif defined(ARMODULE_HID_INFO_H1)
             std::printf("AMAZON REMOTE  |  HID INFO H1\n\n");
 #elif defined(ARMODULE_LATENCY_A6)
             std::printf("AMAZON REMOTE  |  LATENCY A6\n\n");

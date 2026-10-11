@@ -40,6 +40,9 @@ struct FakeState {
 #ifdef ARMODULE_WAKE_A3
     central_bond::WakeStatus wake{};
     unsigned wake_calls{};Result wake_result{};
+    // Opt-in realistic companion: after WakeCommand the saved record reloads
+    // over later polls and WakeStatus reverts to an idle, kind-0 record.
+    bool deferred_reload{};unsigned reload_polls{};
 #endif
 #ifdef ARMODULE_NATIVE_PEER_C1
     central_bond::PeerStatus peer{};
@@ -733,9 +736,15 @@ Result FakeServiceDispatchInput(Service *s,u32 cmd,const void *input,std::size_t
         if(cmd==central_bond::WakeCommand){
             assert(p.in_send_pid && input && size==32 && !f.connected && !f.context_active);
             central_bond::WakeRequest r{};std::memcpy(&r,static_cast<const u8*>(input)+8,sizeof r);
+#ifdef ARMODULE_SETUP_SLEEP_R3
+            if(r.reserved==central_bond::WakeKindPending)
+                assert(r.serial==f.wake.serial && r.nonce==f.peer.nonce && !r.connection && !r.owner_epoch && f.wake.reserved==r.reserved);
+            else
+#endif
             assert(r.serial==f.wake.serial && r.nonce==f.bond.nonce && r.connection==f.bond.connection && r.owner_epoch==f.bond.owner_epoch && !r.reserved);
             ++f.wake_calls;
-            if(!f.wake_result){const auto generation=f.bond.generation;f.bond={};f.bond.store=central_bond::Store::Saved;f.bond.generation=generation;}
+            if(!f.wake_result){const auto generation=f.bond.generation;f.bond={};f.bond.store=central_bond::Store::Saved;f.bond.generation=generation;
+                if(f.deferred_reload){f.bond.store=central_bond::Store::Unknown;f.reload_polls=2;f.wake={};}}
             return f.wake_result;
         }
 #endif
@@ -763,6 +772,9 @@ Result FakeServiceDispatchInput(Service *s,u32 cmd,const void *input,std::size_t
             assert(!input && !size && !p.in_send_pid && p.buffer_attrs[0]==5 &&
                 p.buffers[0].size==sizeof f.bond && p.buffers[0].data);
             ++f.bond_queries;
+#ifdef ARMODULE_WAKE_A3
+            if(f.reload_polls && !--f.reload_polls)f.bond.store=central_bond::Store::Saved;
+#endif
             std::memcpy(const_cast<void*>(p.buffers[0].data),&f.bond,sizeof f.bond);
             return f.bond_query_result;
         }

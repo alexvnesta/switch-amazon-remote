@@ -145,6 +145,28 @@ test-wake-transport: test_wake_transport
 	./test_wake_transport
 all: test_wake_transport
 test: test-wake-transport
+# SETUP R3: unfinished-attempt sleep retirement, plus A3 regressions built with R3.
+R3_CENTRAL_DEPS := test_central_bond_runtime.cpp test_bond_save_io.cpp $(wildcard ../mc_mitm/source/amazon_remote/*.hpp) ../mc_mitm/source/amazon_remote/central_bond_runtime.cpp
+R3_TRANSPORT_DEPS := test_libnx_input_adapter.cpp $(wildcard ../mc_mitm/source/amazon_remote/*.hpp) ../mc_mitm/source/amazon_remote/libnx_session.cpp ../mc_mitm/source/amazon_remote/hogp_client.cpp ../mc_mitm/source/amazon_remote/remote_decoder.cpp ../mc_mitm/source/amazon_remote/diagnostic_log.cpp
+test_wake_session_r3: test_wake_session.cpp $(wildcard ../mc_mitm/source/amazon_remote/*.hpp)
+	$(CXX) $(CXXFLAGS) -DARMODULE_WAKE_A3 -DARMODULE_SETUP_SLEEP_R3 $< -o $@
+test_setup_r3_central: test_setup_sleep_r3_central.cpp $(R3_CENTRAL_DEPS)
+	$(CXX) $(CXXFLAGS) -DARMODULE_WAKE_A3 -DARMODULE_NATIVE_HCI_C2 -DARMODULE_SETUP_SLEEP_R3 -Icentral_bond_sdk $< $(HOST_CRYPTO_LIBS) -o $@
+test_wake_central_r3: test_wake_central.cpp $(R3_CENTRAL_DEPS)
+	$(CXX) $(CXXFLAGS) -DARMODULE_WAKE_A3 -DARMODULE_NATIVE_HCI_C2 -DARMODULE_SETUP_SLEEP_R3 -Icentral_bond_sdk $< $(HOST_CRYPTO_LIBS) -o $@
+test_setup_r3_transport: test_setup_sleep_r3_transport.cpp $(R3_TRANSPORT_DEPS)
+	$(CXX) $(CXXFLAGS) $(WAKE_FLAGS) -DARMODULE_SETUP_SLEEP_R3 -Ifake_sdk $< $(filter ../%.cpp,$^) -o $@
+test_wake_transport_r3: test_wake_transport.cpp $(R3_TRANSPORT_DEPS)
+	$(CXX) $(CXXFLAGS) $(WAKE_FLAGS) -DARMODULE_SETUP_SLEEP_R3 -Ifake_sdk $< $(filter ../%.cpp,$^) -o $@
+test-setup-r3: test_wake_session_r3 test_setup_r3_central test_wake_central_r3 test_setup_r3_transport test_wake_transport_r3
+	./test_wake_session_r3
+	@set -e; for mode in cycles live stop shutdown unprepared attempted mixed; do ./test_setup_r3_central $$mode; done
+	@set -e; for mode in cycles live pending-stop stop shutdown bad-save; do ./test_wake_central_r3 $$mode; done
+	./test_setup_r3_transport
+	./test_wake_transport_r3
+.PHONY: test-setup-r3
+all: test_wake_session_r3 test_setup_r3_central test_wake_central_r3 test_setup_r3_transport test_wake_transport_r3
+test: test-setup-r3
 .PHONY: test-wake-transport
 all: test_auto_a1_transport
 test: test-auto-a1

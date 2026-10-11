@@ -46,5 +46,10 @@ struct WakeStatus {
     std::uint64_t owner_epoch{};
 };
 static_assert(sizeof(WakeRequest)==24 && sizeof(WakeStatus)==40);
+#ifdef ARMODULE_SETUP_SLEEP_R3
+// R3 reuses `reserved` as the wake kind: 0 = completed session (A3 wire,
+// unchanged), 1 = unfinished prepared attempt. Older peers reject nonzero.
+inline constexpr std::uint32_t WakeKindPending=1;
+#endif
 #endif
 }

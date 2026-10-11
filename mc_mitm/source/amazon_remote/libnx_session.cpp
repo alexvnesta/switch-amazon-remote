@@ -1861,6 +1861,18 @@ bool LibnxSession::RetireForSleep(){
     retired_connections_[retired_count_++]=connection_;sleep_retired_=true;
     Close(true);return true;
 }
+#ifdef ARMODULE_SETUP_SLEEP_R3
+bool LibnxSession::RetirePendingForSleep(){
+    // Unfinished saved-peer attempt only: native peer prepared, no READY session.
+    // Close(true) performs no radio operation and never sends Cancel, which would
+    // stop the companion's wake session. Absence is checked after full wake.
+    if(sleep_retired_ || Ready() || !bond_saved_ || !peer_nonce_ || !peer_generation_ ||
+       !known_reconnect_ready_ms_ || scanning_ || retired_count_>=retired_connections_.size())return false;
+    if(have_connection_ && connection_)retired_connections_[retired_count_++]=connection_;
+    pending_peer_nonce_=peer_nonce_;pending_retired_=sleep_retired_=true;
+    Close(true);return true;
+}
+#endif
 Result LibnxSession::ResumeAfterSleep(std::uint64_t now,bool &ready){
     ready=false;
     if(!sleep_retired_ || initialized_ || native_open_ || gatt_.SystemOpen() || !now)return Invalid();
@@ -1870,10 +1882,21 @@ Result LibnxSession::ResumeAfterSleep(std::uint64_t now,bool &ready){
     central_bond::WakeStatus w{};
     rc=serviceDispatch(&service,central_bond::WakeStatusCommand,
         .buffer_attrs={SfBufferAttr_HipcPointer|SfBufferAttr_Out},.buffers={{&w,sizeof w}});
-    if(rc || w.magic!=0x33575241 || w.version!=1 || w.reserved || w.ready>1){serviceClose(&service);return rc?rc:Invalid();}
+#ifdef ARMODULE_SETUP_SLEEP_R3
+    // After WakeCommand the companion has consumed the pending attempt and
+    // reports the plain kind 0 while it reloads the saved record.
+    const std::uint32_t kind=pending_retired_ && !wake_sent_?central_bond::WakeKindPending:0u;
+    const bool identity=pending_retired_?
+        (w.nonce==pending_peer_nonce_ && !w.connection && !w.owner_epoch):
+        (w.nonce==bond_nonce_ && w.connection==connection_ && w.owner_epoch==linked_ms_);
+#else
+    const std::uint32_t kind=0;
+    const bool identity=w.nonce==bond_nonce_ && w.connection==connection_ && w.owner_epoch==linked_ms_;
+#endif
+    if(rc || w.magic!=0x33575241 || w.version!=1 || w.reserved!=kind || w.ready>1){serviceClose(&service);return rc?rc:Invalid();}
     if(!wake_sent_){
         if(!w.ready){serviceClose(&service);return 0;}
-        if(!w.remaining || !w.serial || w.nonce!=bond_nonce_ || w.connection!=connection_ || w.owner_epoch!=linked_ms_){serviceClose(&service);return Invalid();}
+        if(!w.remaining || !w.serial || !identity){serviceClose(&service);return Invalid();}
         rc=btmuInitialize();if(rc){serviceClose(&service);return rc;}
         rc=btmInitialize();
         if(rc){btmuExit();serviceClose(&service);return rc;}
@@ -1890,10 +1913,12 @@ Result LibnxSession::ResumeAfterSleep(std::uint64_t now,bool &ready){
         if(!absence_since_){absence_since_=now;serviceClose(&service);return 0;}
         if(now<absence_since_){serviceClose(&service);return Invalid();}
         if(now-absence_since_<250){serviceClose(&service);return 0;}
-        struct{u64 placeholder_pid;central_bond::WakeRequest request;} req{0,{w.serial,w.nonce,w.connection,0,w.owner_epoch}};
+        struct{u64 placeholder_pid;central_bond::WakeRequest request;} req{0,{w.serial,w.nonce,w.connection,kind,w.owner_epoch}};
         rc=serviceDispatchIn(&service,central_bond::WakeCommand,req,.in_send_pid=true);
         if(rc){serviceClose(&service);return rc;}
-        wake_sent_=true;Log("WAKE_A3 epoch admitted after two absent system/user views; waiting for saved-record reload");
+        wake_sent_=true;
+        Log(kind?"SETUP_R3 unfinished attempt admitted after two absent system/user views; waiting for saved-record reload":
+                 "WAKE_A3 epoch admitted after two absent system/user views; waiting for saved-record reload");
     }
     central_bond::Status s{};
     rc=serviceDispatch(&service,central_bond::StatusCommand,

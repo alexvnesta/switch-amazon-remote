@@ -271,6 +271,24 @@ build/hid-info-h1-control.nacp: Makefile | build/exefs
 	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote" "switch-amazon-remote contributors" "0.3.0-hid-h1" $@
 build/amazon-remote-hid-info-h1.nro: build/hid-info-h1-control.elf build/hid-info-h1-control.nacp
 	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/hid-info-h1-control.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
+# SETUP R3: H1 plus retire-at-sleep for an unfinished attempt (companion must match).
+SETUP_R3_FLAGS := -DARMODULE_SETUP_SLEEP_R3 $(HID_INFO_H1_FLAGS)
+build/setup-r3-module.elf: main.cpp $(TRANSPORT) $(HEADERS) Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) $(SETUP_R3_FLAGS) $(LDFLAGS) main.cpp $(TRANSPORT) $(LIBS) -o $@
+build/setup-r3-exefs/main: build/setup-r3-module.elf
+	mkdir -p build/setup-r3-exefs
+	$(DEVKITPRO)/tools/bin/elf2nso $< $@
+build/setup-r3-exefs/main.npdm: module-nav15.json
+	mkdir -p build/setup-r3-exefs
+	$(DEVKITPRO)/tools/bin/npdmtool $< $@
+build/setup-r3-exefs.nsp: build/setup-r3-exefs/main build/setup-r3-exefs/main.npdm
+	$(DEVKITPRO)/tools/bin/build_pfs0 build/setup-r3-exefs $@
+build/setup-r3-control.elf: control/automatic_main.cpp control/operator_input.hpp $(HEADERS) Makefile | build/exefs
+	$(CXX) $(CXXFLAGS) $(SETUP_R3_FLAGS) $(LDFLAGS) control/automatic_main.cpp $(LIBS) -o $@
+build/setup-r3-control.nacp: Makefile | build/exefs
+	$(DEVKITPRO)/tools/bin/nacptool --create "Amazon Remote" "switch-amazon-remote contributors" "0.3.1-setup-r3" $@
+build/amazon-remote-setup-r3.nro: build/setup-r3-control.elf build/setup-r3-control.nacp
+	$(DEVKITPRO)/tools/bin/elf2nro $< $@ --nacp=build/setup-r3-control.nacp --icon=$(DEVKITPRO)/libnx/default_icon.jpg
 build/latency-a6-module.elf: main.cpp $(TRANSPORT) $(HEADERS) Makefile | build/exefs
 	$(CXX) $(CXXFLAGS) $(LATENCY_A6_FLAGS) $(LDFLAGS) main.cpp $(TRANSPORT) $(LIBS) -o $@
 build/latency-a6-exefs/main: build/latency-a6-module.elf

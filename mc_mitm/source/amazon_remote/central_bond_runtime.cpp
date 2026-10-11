@@ -220,7 +220,15 @@ void Suspend(){std::scoped_lock lock(mutex);suspended=true;idle_power_pause=fals
 #ifdef ARMODULE_WAKE_A3
 bool PauseSessionForPower(){
     std::scoped_lock lock(mutex);
-    if(!configured || !loaded || status.store!=Store::Saved || !attempted || !wake.Sleep())return false;
+    if(!configured || !loaded || status.store!=Store::Saved)return false;
+    bool paused=attempted && wake.Sleep();
+#ifdef ARMODULE_SETUP_SLEEP_R3
+    // R3: a prepared peer whose session never completed retires by peer nonce.
+    // The module must retire the same attempt; otherwise its Cancel stops wake.
+    if(!paused)paused=peer_used && peer_pid && peer_status.phase==cb::PeerPhase::Ready &&
+        wake.SleepPending(peer_status.nonce);
+#endif
+    if(!paused)return false;
     suspended=true;Encryption().Cancel();candidate.Clear();previous.Clear();next.Clear();return true;
 }
 bool ResumeSessionAfterPower(){
@@ -234,11 +242,22 @@ bool ReadWakeStatus(void *out,std::size_t size){
     std::scoped_lock lock(mutex);cb::WakeStatus w;
     w.serial=wake.Serial();w.ready=wake.Ready(!alive && link_generation>owned_generation);
     w.remaining=wake.Remaining();w.nonce=status.nonce;w.connection=status.connection;w.owner_epoch=status.owner_epoch;
+#ifdef ARMODULE_SETUP_SLEEP_R3
+    // Kind 1: unfinished attempt. Identity is the peer nonce; no link was owned.
+    if(wake.Pending()){w.reserved=cb::WakeKindPending;w.ready=wake.Ready(!alive);
+        w.nonce=wake.PendingNonce();w.connection=0;w.owner_epoch=0;}
+#endif
     std::memcpy(out,&w,sizeof w);return true;
 }
 bool ResumeSavedSession(std::uint64_t caller,const cb::WakeRequest &r){
     if(!Owner(caller))return false;
     std::scoped_lock lock(mutex);
+#ifdef ARMODULE_SETUP_SLEEP_R3
+    if(r.reserved==cb::WakeKindPending){
+        if(caller!=peer_pid || r.connection || r.owner_epoch || session_index+1>=requests.size() || !suspended ||
+           status.store!=Store::Saved || !wake.ConsumePending(r.serial,r.nonce,!alive))return false;
+    } else
+#endif
     if(caller!=pid || r.reserved || session_index+1>=requests.size() || !suspended ||
        status.store!=Store::Saved || !wake.Consume(r.serial,r.nonce,r.connection,r.owner_epoch,!alive && link_generation>owned_generation))return false;
     Encryption().Cancel();++session_index;

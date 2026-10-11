@@ -83,6 +83,9 @@ public:
     void Close(bool sleeping=false);
 #ifdef ARMODULE_WAKE_A3
     bool RetireForSleep();
+#ifdef ARMODULE_SETUP_SLEEP_R3
+    bool RetirePendingForSleep();
+#endif
     Result ResumeAfterSleep(std::uint64_t now,bool &ready);
     bool CompletedLinkLost()const{return completed_link_lost_;}
 #endif
@@ -132,6 +135,10 @@ private:
     unsigned retired_count_{};
     bool sleep_retired_{},wake_sent_{};
     std::uint64_t wake_begin_{},absence_since_{};
+#ifdef ARMODULE_SETUP_SLEEP_R3
+    std::uint32_t pending_peer_nonce_{};
+    bool pending_retired_{};
+#endif
 #endif
 #ifdef ARMODULE_CENTRAL_BOND_B1
     Result PollCentralBond(bool &ready);

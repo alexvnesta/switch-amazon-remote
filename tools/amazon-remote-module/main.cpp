@@ -220,6 +220,9 @@ int main(int, char **) {
 #ifdef ARMODULE_HID_INFO_H1
     Log("HID_INFO_H1: one optional read after READY; pairing/sleep policy unchanged; this is not a wake implementation");
 #endif
+#ifdef ARMODULE_SETUP_SLEEP_R3
+    Log("SETUP_R3: sleep before READY retires the unfinished attempt; after acknowledged FullAwake and confirmed old-link absence, one fresh saved-only attempt; same eight-session budget; no pairing or retry loop");
+#endif
 #ifdef ARMODULE_AUTOMATIC_A1
 #ifdef ARMODULE_STARTUP_A4
     Log("STARTUP_A4: initially operational after successful registration and health qualification; first PSC event revokes bootstrap; later wake requires acknowledged FullAwake; saved pairing unchanged");
@@ -535,6 +538,21 @@ int main(int, char **) {
                     } else {cleanup();status.result=pad_rc?pad_rc:Invalid();}
                     log_file.Close();
                 } else
+#ifdef ARMODULE_SETUP_SLEEP_R3
+                // R3: sleep before READY (for example the lock screen timing out
+                // mid-connect) retires the unfinished attempt instead of stopping.
+                if(awake && !decision.shutdown &&
+                   (policy.Get()==armodule::State::Scanning || policy.Get()==armodule::State::Linking)) {
+                    const auto pad_rc=detach_pad();
+                    if(!pad_rc && remote.RetirePendingForSleep()) {
+                        if(capture_owned && serviceIsActive(&mc))ResultLog("end sleep capture",serviceDispatch(&mc,65003));
+                        capture_owned=false;serviceClose(&mc);lease={};
+                        wake_pending=true;wake_poll=sleep_edge_wait=0;
+                        Log("SETUP_R3_SLEEP_PENDING: unfinished attempt retired; next fully-awake transition requires old-link absence, then one fresh attempt");
+                    } else {cleanup();status.result=pad_rc?pad_rc:Invalid();}
+                    log_file.Close();
+                } else
+#endif
 #endif
                 if (awake) { cleanup(); Log("Suspend/shutdown: neutralize/detach attempted; no automatic reconnect"); log_file.Close(); }
                 policy.Suspend();
@@ -824,6 +842,16 @@ int main(int, char **) {
                 if(pad_rc)stop(pad_rc);
                 else Log("WAKE_A3_LINK_LOST: output detached; waiting at most1500ms for actual PSC sleep, otherwise terminal stop");
             } else
+#ifdef ARMODULE_SETUP_SLEEP_R3
+            if(R_FAILED(rc) && log_healthy &&
+               (policy.Get()==armodule::State::Scanning || policy.Get()==armodule::State::Linking)) {
+                // Sleep teardown fails a pending connection a few ms before PSC
+                // SleepReady. No output exists yet; hold for a real sleep event.
+                sleep_edge_wait=Now();
+                char detail[160]{};std::snprintf(detail,sizeof detail,"SETUP_R3_HOLD Result=%08lx: unfinished attempt failed; waiting at most1500ms for actual PSC sleep, otherwise terminal stop",static_cast<unsigned long>(rc));
+                Log(detail);
+            } else
+#endif
 #endif
             if (R_FAILED(rc) || !log_healthy) stop(R_FAILED(rc) ? rc : Invalid());
             else if (remote.Ready()) {
