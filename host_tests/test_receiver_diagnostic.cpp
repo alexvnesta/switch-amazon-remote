@@ -44,6 +44,6 @@ int main(){
     }
     ReceiverDiagnostic concurrent;std::atomic<bool> done{};
     std::thread producer([&]{for(unsigned i=0;i<100000;++i)concurrent.Observe(6,valid.data(),valid.size(),target,true);done=true;});
-    while(!done.load())(void)concurrent.Read();producer.join();assert(concurrent.Read()[0]==100000);
+    while(!done.load()){(void)concurrent.Read();}producer.join();assert(concurrent.Read()[0]==100000);
     std::printf("PASS %u receiver stages,4096 TargetView-equivalence cases,4 exclusive storage/partial cases,88 corruption cases and concurrent atomic reads; no radio\n",cases);
 }

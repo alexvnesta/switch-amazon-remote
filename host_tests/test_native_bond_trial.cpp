@@ -52,17 +52,17 @@ int main(){
     for(unsigned i=0;i<sizeof r;++i){auto bad=r;reinterpret_cast<unsigned char *>(&bad)[i]^=1;assert(!arnativebond::Valid(bad));}
     for(unsigned scenario=0;scenario<10;++scenario){
         Reset();Backend x;arnativebond::Trial t;
-        if(scenario==0)x.supported=false;if(scenario==1)x.confirmed=false;
-        if(scenario==2)x.bad_guard=1;if(scenario==3)open_result=55;
-        if(scenario==4)getter_result=66;if(scenario==5)enabled=0;
-        if(scenario==6)x.persist=false;if(scenario==7)x.bad_guard=2;
-        if(scenario==8)x.change_binding=1;if(scenario==9)x.change_binding=2;
+        if(scenario==0){x.supported=false;}if(scenario==1){x.confirmed=false;}
+        if(scenario==2){x.bad_guard=1;}if(scenario==3){open_result=55;}
+        if(scenario==4){getter_result=66;}if(scenario==5){enabled=0;}
+        if(scenario==6){x.persist=false;}if(scenario==7){x.bad_guard=2;}
+        if(scenario==8){x.change_binding=1;}if(scenario==9){x.change_binding=2;}
         r=t.Attempt(x,target);assert(arnativebond::Valid(r) && !r.request_issued && !requests);
     }
     for(unsigned raw=2;raw<=255;++raw){Reset();enabled=raw;Backend x;arnativebond::Trial t;r=t.Attempt(x,target);assert(arnativebond::Valid(r) && !requests && !r.enabled);}
     Reset();Backend delayed;delayed.delay=2001;arnativebond::Trial dt;r=dt.Attempt(delayed,target);assert(arnativebond::Valid(r) && !requests);
     Reset();request_result=77;Backend failed;arnativebond::Trial ft;r=ft.Attempt(failed,target);assert(arnativebond::Valid(r) && r.state==unsigned(arnativebond::State::RequestFailed) && requests==1 && closes==1);
-    for(bool broadcast:{false,true}){Reset();BtdrvAddress bad{};if(broadcast)std::memset(&bad,255,sizeof bad);Backend x;arnativebond::Trial t;r=t.Attempt(x,bad);assert(arnativebond::Valid(r) && !opens && !requests && !x.guards);}
+    for(bool broadcast:{false,true}){Reset();BtdrvAddress bad{};if(broadcast)std::memset(static_cast<void*>(&bad),255,sizeof bad);Backend x;arnativebond::Trial t;r=t.Attempt(x,bad);assert(arnativebond::Valid(r) && !opens && !requests && !x.guards);}
     armodule::Status s{};s.instance=42;s.now_ms=10000;s.state=unsigned(armodule::State::Ready);
     // Real Nav17 publisher: sighting() returns false outside SCANNING.
     s.link_ready=0;s.output_attached=s.successful_writes=1;

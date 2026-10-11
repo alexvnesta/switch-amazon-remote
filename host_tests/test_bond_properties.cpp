@@ -12,7 +12,7 @@ auto Packet(unsigned kind,unsigned detail,unsigned nonce=0) {
     d[10]=kind;d[11]=detail;std::memcpy(d.data()+12,&nonce,4);
     const auto extension=ExtensionMagic,flags=Flags(kind,detail);
     std::memcpy(d.data()+16,&extension,4);std::memcpy(d.data()+20,&flags,4);
-    if(flags&1)d[24]=1;if(flags&2)d[25]=16;if(flags&8)d[27]=1;
+    if(flags&1){d[24]=1;}if(flags&2){d[25]=16;}if(flags&8){d[27]=1;}
     return d;
 }
 int main(){

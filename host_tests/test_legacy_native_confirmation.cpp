@@ -93,9 +93,9 @@ int main(int argc,char **argv) {
     }
     for(unsigned mode=0;mode<6;++mode) {
         auto foreign=b;
-        if(mode==0)foreign.controller_context[0]^=1;if(mode==1)foreign.local[0]^=1;
-        if(mode==2)foreign.peer[0]^=1;if(mode==3)foreign.local_type=1;
-        if(mode==4)foreign.peer_type=1;if(mode==5)++foreign.profile;
+        if(mode==0){foreign.controller_context[0]^=1;}if(mode==1){foreign.local[0]^=1;}
+        if(mode==2){foreign.peer[0]^=1;}if(mode==3){foreign.local_type=1;}
+        if(mode==4){foreign.peer_type=1;}if(mode==5){++foreign.profile;}
         assert(!Check(record,foreign,native));
     }
     rec::Buffer empty;assert(rec::Empty(b,empty) && !Check(empty,b,native));

@@ -39,7 +39,7 @@ struct Platform {
     Result ReadStatus(armodule::Status &out,std::uint64_t now){
         ++reads;if(reads==2 && change_second){s.state=unsigned(armodule::State::Stopped);Sign();}
         if(status_result)return status_result;
-        if(!armodule::FreshStatus(s,now))return 0x402;out=s;return 0;
+        if(!armodule::FreshStatus(s,now)){return 0x402;}out=s;return 0;
     }
     bool PersistIntent(const Record &r){++intents;assert(Valid(r) && !requests);return persist;}
 };

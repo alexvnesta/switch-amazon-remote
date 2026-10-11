@@ -40,10 +40,10 @@ int main(){
     {Backend b;b.now=0;R r(b);assert(r.Begin(Target())==S::Rejected && !b.calls);}
     for(unsigned failure=0;failure<8;++failure){
         Backend b;R r(b);assert(r.Begin(Target())==S::Waiting);b.encrypted=true;
-        if(failure==0)b.peer[0]^=1;if(failure==1)b.transport=1;
-        if(failure==2)b.callback_result=10;if(failure==3)b.owns=false;
-        if(failure==4)b.encrypted=false;if(failure==5)b.now=99;
-        if(failure==6)b.now=15100;if(failure==7)r.Cancel();
+        if(failure==0){b.peer[0]^=1;}if(failure==1){b.transport=1;}
+        if(failure==2){b.callback_result=10;}if(failure==3){b.owns=false;}
+        if(failure==4){b.encrypted=false;}if(failure==5){b.now=99;}
+        if(failure==6){b.now=15100;}if(failure==7){r.Cancel();}
         b.Finish();assert(!r.TakeReady());const auto terminal=r.GetState();
         b.peer=Target().peer;b.transport=2;b.callback_result=0;b.owns=true;b.encrypted=true;b.now=101;
         b.Finish();assert(r.GetState()==terminal && !r.TakeReady());
@@ -51,16 +51,16 @@ int main(){
     }
     for(unsigned failure=0;failure<3;++failure){
         Backend b;R r(b);r.Begin(Target());b.encrypted=true;b.Finish();assert(r.GetState()==S::Complete);
-        if(failure==0)b.owns=false;if(failure==1)b.encrypted=false;if(failure==2)b.now=15100;
+        if(failure==0){b.owns=false;}if(failure==1){b.encrypted=false;}if(failure==2){b.now=15100;}
         assert(!r.TakeReady());
     }
     for(unsigned bad=0;bad<11;++bad){
         Backend b;R r(b);auto t=Target();std::uint64_t timeout=15000;
-        if(bad==0)t.driver_instance=0;if(bad==1)t.connection_epoch=0;
-        if(bad==2)t.record_generation=0;if(bad==3)t.peer.fill(0);
-        if(bad==4)t.peer.fill(255);if(bad==5)t.hci_handle=0xeff+1;
-        if(bad==6)t.minimum_key_bytes=6;if(bad==7)t.minimum_key_bytes=17;
-        if(bad==8)timeout=0;if(bad==9)timeout=30001;if(bad==10)b.admit=false;
+        if(bad==0){t.driver_instance=0;}if(bad==1){t.connection_epoch=0;}
+        if(bad==2){t.record_generation=0;}if(bad==3){t.peer.fill(0);}
+        if(bad==4){t.peer.fill(255);}if(bad==5){t.hci_handle=0xeff+1;}
+        if(bad==6){t.minimum_key_bytes=6;}if(bad==7){t.minimum_key_bytes=17;}
+        if(bad==8){timeout=0;}if(bad==9){timeout=30001;}if(bad==10){b.admit=false;}
         assert(r.Begin(t,timeout)==S::Rejected && b.calls==0);
     }
     {Backend b;b.now=~std::uint64_t{}-10;R r(b);assert(r.Begin(Target())==S::Rejected && !b.calls);}

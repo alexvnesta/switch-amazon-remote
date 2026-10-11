@@ -33,8 +33,8 @@ int main(int argc,char **argv){
         cb::WakeRequest request{w.serial,w.nonce,w.connection,0,w.owner_epoch};
         assert(!rt::ResumeSavedSession(99,request));
         for(unsigned field=0;field<5;++field){auto bad=request;
-            if(field==0)++bad.serial;if(field==1)++bad.nonce;if(field==2)++bad.connection;
-            if(field==3)++bad.owner_epoch;if(field==4)++bad.reserved;
+            if(field==0){++bad.serial;}if(field==1){++bad.nonce;}if(field==2){++bad.connection;}
+            if(field==3){++bad.owner_epoch;}if(field==4){++bad.reserved;}
             assert(!rt::ResumeSavedSession(73,bad));}
         if(mode=="stop"){rt::Cancel(73);assert(!Wake().ready && !rt::ResumeSavedSession(73,request));return 0;}
         if(mode=="shutdown"){rt::Suspend();assert(!Wake().ready && !rt::ResumeSavedSession(73,request));return 0;}

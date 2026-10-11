@@ -50,8 +50,8 @@ int main(int argc,char **argv){
         const auto request=Pending(w);
         assert(!rt::ResumeSavedSession(99,request));
         for(unsigned field=0;field<5;++field){auto bad=request;
-            if(field==0)++bad.serial;if(field==1)++bad.nonce;if(field==2)bad.connection=4;
-            if(field==3)bad.owner_epoch=1;if(field==4)bad.reserved=0;
+            if(field==0){++bad.serial;}if(field==1){++bad.nonce;}if(field==2){bad.connection=4;}
+            if(field==3){bad.owner_epoch=1;}if(field==4){bad.reserved=0;}
             assert(!rt::ResumeSavedSession(73,bad));}
         if(mode=="stop"){rt::Cancel(73);assert(!Wake().ready && !rt::ResumeSavedSession(73,request));
             std::puts("PASS R3 Cancel stops a pending wake");return 0;}

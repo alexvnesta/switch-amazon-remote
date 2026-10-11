@@ -28,7 +28,7 @@ record::Binding Binding(){record::Binding b{};b.peer=peer;b.local=local;b.profil
     std::array<u8,16> ns{'A','R','-','C','E','N','1',0};std::copy(local.begin(),local.end(),ns.begin()+8);
     sha256CalculateHash(b.controller_context.data(),ns.data(),ns.size());return b;}
 void Saved(){std::array<u8,36> e{};std::copy(peer.begin(),peer.end(),e.begin());e[6]=1;
-    for(unsigned i=0;i<26;++i)e[8+i]=8+i;e[34]=1;e[35]=16;
+    for(unsigned i=0;i<26;++i){e[8+i]=8+i;}e[34]=1;e[35]=16;
     legacy::Material key;assert(legacy::Decode(legacy::Layout::AuditedC91Legacy,peer,e,key));
     record::Buffer out;record::Materials material{&key,nullptr,nullptr,nullptr,nullptr};
     assert(record::Build(Binding(),1,material,1,16,false,out));std::copy(out.Read().begin(),out.Read().end(),f.committed.begin());f.pending=f.committed;

@@ -84,10 +84,10 @@ int main(){
     assert(f::MatchedDriver(modules,2,4,4,main,addon,0x2f4000));
     for(unsigned mode=0;mode<8;++mode) {
         auto bad=modules;int count=2;std::uint64_t after=4;
-        if(mode==0)bad[0].build_id[0]^=1;if(mode==1)bad[1].base_address+=4096;
-        if(mode==2)bad[1].size+=4096;if(mode==3)count=3;if(mode==4)after=5;
+        if(mode==0){bad[0].build_id[0]^=1;}if(mode==1){bad[1].base_address+=4096;}
+        if(mode==2){bad[1].size+=4096;}if(mode==3){count=3;}if(mode==4){after=5;}
         if(mode==5)bad[0].base_address=~std::uint64_t{}-4095;
-        if(mode==6)bad[0].base_address++;if(mode==7)bad[0].size++;
+        if(mode==6){bad[0].base_address++;}if(mode==7){bad[0].size++;}
         assert(!f::MatchedDriver(bad,count,4,after,main,addon,0x2f4000));
     }
     assert(f::MatchedCompanion(modules,1,4,4,main));assert(!f::MatchedCompanion(modules,2,4,4,main));

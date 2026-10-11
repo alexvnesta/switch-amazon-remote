@@ -19,7 +19,7 @@ int main() {
     assert(!d::ReadRecord(slot,nullptr,sizeof output));
     for(std::size_t size=0;size<=256;++size) {
         if(size==sizeof output)continue;
-        std::memset(&output,0xa5,sizeof output);auto before=output;
+        std::memset(static_cast<void*>(&output),0xa5,sizeof output);auto before=output;
         assert(!d::ReadRecord(slot,&output,size) && !std::memcmp(&output,&before,sizeof output));
     }
     assert(!d::ReadRecord(slot,&output,std::numeric_limits<std::size_t>::max()));

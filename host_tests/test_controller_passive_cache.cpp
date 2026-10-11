@@ -26,9 +26,9 @@ int main(){
     cache.Observe(reinterpret_cast<void*>(1),10000,106); // No dereference after lifetime bound.
     for(unsigned member=0;member<8;++member){
         auto bad=first;
-        if(member==0)bad.magic^=1;if(member==1)bad.version=2;if(member==2)bad.reserved0=1;
-        if(member==3)bad.accepted=65;if(member==4)bad.rejected=2;if(member==5)bad.first_ms=99;
-        if(member==6)bad.last_ms=100;if(member==7)bad.first.max_filters=256;
+        if(member==0){bad.magic^=1;}if(member==1){bad.version=2;}if(member==2){bad.reserved0=1;}
+        if(member==3){bad.accepted=65;}if(member==4){bad.rejected=2;}if(member==5){bad.first_ms=99;}
+        if(member==6){bad.last_ms=100;}if(member==7){bad.first.max_filters=256;}
         assert(!p::Valid(bad));
     }
     p::Cache malformed;assert(malformed.Start(100));event.version=2;
