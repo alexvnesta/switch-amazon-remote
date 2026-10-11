@@ -76,12 +76,42 @@ the R3 change; the companion to installed S1 apart from the R3 change.
    acknowledgement, so nothing further is recorded. The console then **hung
    entering sleep**.
 
-This was the first time sleep was entered with a pending native connection
-request while the companion was in its paused-session state. Under H1 the same
-case took the terminal path and slept normally in several boots. The leading,
-unproven hypothesis: the paused-session path leaves the filter-correction,
-lease-scan and receiver runtimes unsuspended, unlike the terminal path. The
-system sleep path must cancel the pending connection and wait for its
-completion, and that wait may never finish. Any successor must either fully
-suspend the companion's event-side runtimes for this case, or prove that the
-pending-connection cancel completes, before another device test.
+## Root cause of the run 2 hang
+
+The companion handles power transitions, its 1 Hz maintenance `Poll` and its
+100 ms handshake poll on **one** main thread. Three one-shot diagnostics on that
+thread write to the SD card once the capture lease reads Ended (or, for the
+receiver writer, Expired): filter correction, the lease-scan trace and the
+receiver writer. The first two are opted in on this console.
+
+- `CloseForPower` (the terminal path) ends the lease and, in the same
+  power-handler call, suspends all three. `Poll` cannot run in between, so no
+  storage work happens during sleep.
+- `PauseSession` (A3 completed sessions and R3 unfinished attempts) ends the
+  lease and returns **without suspending them**. The next `Poll` then starts SD
+  writes in the middle of the sleep sequence. A write that blocks there keeps
+  the main thread from acknowledging the next sleep state, and system sleep
+  stalls.
+
+This breaks the companion's own rule: no filesystem work before the power
+acknowledgement.
+
+Device evidence: each boot that arms a capture leaves one
+`receiver-capture-<arm ms>.bin`. Run 1 (arm 12972 ms) and the boot after the
+hang (arm 13114 ms) have theirs. The hung run 2 (arm 12849 ms) has none. Both
+runs ended the lease at sleep (31.0 s and 32.5 s); run 1's writes completed,
+run 2's did not. That fits a race between `Poll` and storage suspension. The
+exact blocking call is not observable, because both logs close before sleep.
+
+Earlier sleeps were safe for identifiable reasons. H1's terminal path suspends
+the writers. The A3 cycle tests first slept at 147.9 s, after the 60 s lease
+had expired, so the writers had already saved while awake.
+
+**The same gap exists in A3 as installed (H1 with S1).** A connected-remote
+sleep before the boot lease expires (about the first 73 s after boot, such as
+the lock screen sleeping 31 s after a quick connect) takes `PauseSession` with
+a live lease. R3 run 1 was exactly that sleep, and it survived.
+
+Fix direction: suspend the three writers in `PauseSession` exactly as
+`CloseForPower` does, before the acknowledgement. They are diagnostics only,
+and the link-only reconnect after wake uses none of them.
