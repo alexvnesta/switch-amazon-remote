@@ -38,6 +38,30 @@ client lifetimes and post-wake subscription behavior need device validation.
 Lower configured waits are verified in source and tests, not a measured physical
 press-to-response speedup. Verbose synchronous logging is still enabled.
 
+## Device result, 2026-10-11
+
+First device run of the connected-sleep path, with the H1 module (A3 lineage),
+the S1 companion and the unchanged native patch. The remote connected at boot
+and navigated. Two power-button sleep/wake cycles followed; the console was
+always woken manually.
+
+- **Cycle 1 passed.** Sleep retired the READY session. After the acknowledged
+  full-awake transition, two absence views confirmed the old link was gone, a
+  fresh session reused the saved native peer record (still BLE/public), and the
+  remote reconnected with its stored key. Input was ready about 7.7 s after
+  the wake acknowledgement and unlocked the console.
+- **Cycle 2 failed closed.** Sleep, wake and the absence checks passed again,
+  but the existing native peer record now reported device type 0. As designed
+  in [C1](SAVED_PEER_C1.md), the bridge never rewrites an existing record, so
+  preparation failed with `0xf0` and the module stopped. No connection,
+  pairing or record change was attempted.
+
+Which operation changed the record between the cycle-1 session and the second
+wake is not established. A reboot starts without a record, so cold connects are
+unaffected; after a stopped wake, reboot to restore the remote. A lasting fix
+needs a reviewed rule for a stale record of the exact configured peer, which
+is a native-bridge change.
+
 ## Next device test
 
 Reboot with the matched build. Tap remote Up and test HOME navigation. Put the
