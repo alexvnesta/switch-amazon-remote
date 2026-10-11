@@ -17,13 +17,17 @@ struct Event { u32 id{}; };
 struct Service { u32 id{}; };
 bool serviceIsActive(Service*); void serviceClose(Service*);
 bool hosversionBefore(unsigned,unsigned,unsigned);
+#define MAKEHOSVERSION(a,b,c) (((a)<<16)|((b)<<8)|(c))
+u32 hosversionGet();
 Result smGetService(Service*,const char*);
 Result FakeServiceDispatch(Service*,u32,const void*,std::size_t,void*,std::size_t);
-inline constexpr unsigned SfBufferAttr_HipcPointer=1,SfBufferAttr_In=2;
+inline constexpr unsigned SfBufferAttr_HipcPointer=1,SfBufferAttr_In=2,SfBufferAttr_Out=4;
+#define serviceDispatch(srv,cmd,...) FakeServiceDispatchInput(srv,cmd,nullptr,0,FakeDispatchParams{__VA_ARGS__})
 struct FakeDispatchParams { unsigned buffer_attrs[1]{};struct { const void *data{};std::size_t size{}; } buffers[1];bool in_send_pid{}; };
 Result FakeServiceDispatchInput(Service*,u32,const void*,std::size_t,FakeDispatchParams);
 #define serviceDispatchIn(srv,cmd,input,...) FakeServiceDispatchInput(srv,cmd,&(input),sizeof(input),FakeDispatchParams{__VA_ARGS__})
 #define serviceDispatchInOut(srv,cmd,input,output) FakeServiceDispatch(srv,cmd,&(input),sizeof(input),&(output),sizeof(output))
+#define serviceDispatchOut(srv,cmd,output) FakeServiceDispatch(srv,cmd,nullptr,0,&(output),sizeof(output))
 struct BtdrvAddress { u8 address[6]{}; };
 struct BtdrvGattAttributeUuid { u32 size{}; u8 uuid[16]{}; };
 struct BtdrvGattId { u8 instance_id{}; u8 pad[3]{}; BtdrvGattAttributeUuid uuid{}; };
@@ -35,13 +39,14 @@ Result btmGetDeviceCondition(BtmProfile,BtmDeviceCondition*,std::size_t,s32*);
 Result btmBleGetConnectionState(BtdrvBleConnectionInfo*,u8,u8*);
 Result btmsysInitialize();void btmsysExit();Result btmsysIsGamepadPairingStarted(bool*);
 enum BtdrvGattAuthReqType { BtdrvGattAuthReqType_None=0, BtdrvGattAuthReqType_NoMitm=1 };
-enum BtdrvBleEventType { BtdrvBleEventType_ClientNotify=8 };
+enum BtdrvBleEventType { BtdrvBleEventType_ClientConnection=4, BtdrvBleEventType_ClientNotify=8 };
 struct FakeNotify {
     u32 result{},conn_id{}; u8 type{},pad[3]{};
     BtdrvGattAttributeUuid serv_uuid{},char_uuid{},desc_uuid{};
     u16 size{}; u8 data[0x200]{},tail[2]{};
 };
-struct BtdrvBleEventInfo { union { u8 data[0x400]; FakeNotify client_notify; }; };
+struct FakeClientConnection { u32 result{};u8 status{},client_if{},pad[2]{};u32 conn_id{};BtdrvAddress address{};u16 reason{}; };
+struct BtdrvBleEventInfo { union { u8 data[0x400]; FakeNotify client_notify; FakeClientConnection client_connection; }; };
 struct BtdrvLeEventInfo {
     u32 unk_x0{},unk_x4{}; u8 unk_x8{},pad[3]{};
     BtdrvGattAttributeUuid uuid0{},uuid1{},uuid2{};
@@ -70,7 +75,11 @@ Result btdevUnregisterGattOperationNotification(const BtdrvGattAttributeUuid*);
 Result btmuStartBleScanForSmartDevice(const BtdrvGattAttributeUuid*); Result btdevStartBleScanSmartDevice(const BtdrvGattAttributeUuid*); Result btmuStopBleScanForSmartDevice(); Result btdevStopBleScanSmartDevice();
 Result btdevGetBleConnectionInfoList(BtdrvBleConnectionInfo*,u8,u8*);
 Result btmuBleGetConnectionState(BtdrvBleConnectionInfo*,u8,u8*);
+Result btmuBleDisconnect(u32);
+Result btmBleDisconnect(u32);
 struct BtdrvBleAdvertisePacketParameter {u16 company_id{};u8 pattern_data[6]{};};
+Result btmuStartBleScanForGeneral(BtdrvBleAdvertisePacketParameter);
+Result btmuStopBleScanForGeneral();
 Result btmuBleGetPairedDevices(BtdrvBleAdvertisePacketParameter,BtdrvAddress*,u8,u8*);
 Result btmuBlePairDevice(u32,BtdrvBleAdvertisePacketParameter);
 Result btmBlePairDevice(u32,BtdrvBleAdvertisePacketParameter);

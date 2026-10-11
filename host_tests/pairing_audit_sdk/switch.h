@@ -19,3 +19,17 @@ Result btmuBleGetConnectionState(BtdrvBleConnectionInfo*,u8,u8*);
 Result btmBleGetConnectionState(BtdrvBleConnectionInfo*,u8,u8*);
 Result btmBleGetPairedAddresses(BtdrvBleAdvertisePacketParameter,BtdrvAddress*,u8,u8*);
 u64 armGetSystemTick();u64 armTicksToNs(u64);
+// Read-only MissionControl metadata getter seam, not a driver-event consumer.
+struct Service {bool active{};};
+Result smGetService(Service*,const char*);bool serviceIsActive(Service*);void serviceClose(Service*);
+inline constexpr unsigned SfBufferAttr_HipcPointer=1,SfBufferAttr_Out=2;
+struct FakeSecurityDispatchParams {
+    unsigned buffer_attrs[1]{};
+    struct {void *data{};std::size_t size{};} buffers[1];
+};
+Result FakeSecurityDispatch(Service*,unsigned,FakeSecurityDispatchParams);
+#define serviceDispatch(srv,cmd,...) FakeSecurityDispatch(srv,cmd,FakeSecurityDispatchParams{__VA_ARGS__})
+Result FakeDriverStateDispatch(Service*,unsigned,void*,std::size_t);
+#define serviceDispatchOut(srv,cmd,out,...) FakeDriverStateDispatch(srv,cmd,&out,sizeof(out))
+Result FakeNativeBondDispatch(Service*,unsigned,const void*,std::size_t);
+#define serviceDispatchIn(srv,cmd,input,...) FakeNativeBondDispatch(srv,cmd,&input,sizeof(input))

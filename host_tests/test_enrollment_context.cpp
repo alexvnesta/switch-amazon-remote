@@ -3,6 +3,9 @@
 #include <cassert>
 #include <cstdio>
 #include <vector>
+#ifdef POSTCHECK_TEST
+#include "postcheck_fixture.hpp"
+#endif
 namespace {
 const araudit::Address target{0x02,0xab,0xcd,0x12,0x34,0x56};
 unsigned variant{},ticks{};std::vector<unsigned> calls;
@@ -44,7 +47,24 @@ void btmsysExit(){calls.push_back(11);}
 Result btmsysIsGamepadPairingStarted(bool *started){calls.push_back(10);*started=variant!=22;return variant==19?69:0;}
 int main(){
     for(variant=0;variant<32;++variant) {
-        ticks=0;calls.clear();araudit::Backend b;const auto s=araudit::CollectContext(b,target);
+        ticks=0;calls.clear();araudit::Backend b;
+#ifdef POSTCHECK_TEST
+        PostFixture f;arpostcheck::Collector collector;
+        const auto record=collector.Once(b,target,f.owner,f.intent,f.status,1000,true);
+        assert(arpostcheck::Valid(record) && record.guard==0);
+        assert(arpostcheck::TimedAfterRequest(record)==(variant!=20 && variant!=21 && variant!=31));
+        const auto previous=calls;
+        const auto second=collector.Once(b,target,f.owner,f.intent,f.status,1000,true);
+        assert(second.guard==unsigned(arpostcheck::Guard::Preflight) && calls==previous && arpostcheck::Valid(second));
+        arpostcheck::Collector refused;f.status.state=unsigned(armodule::State::Ready);f.Seal();
+        const auto bad=refused.Once(b,target,f.owner,f.intent,f.status,1000,true);
+        assert(bad.guard==unsigned(arpostcheck::Guard::Status) && calls==previous && arpostcheck::Valid(bad));
+        arpostcheck::Collector preflight;
+        assert(preflight.Once(b,target,f.owner,f.intent,f.status,1000,false).guard==unsigned(arpostcheck::Guard::Preflight) && calls==previous);
+        const auto s=record.snapshot;
+#else
+        const auto s=araudit::CollectContext(b,target);
+#endif
         assert(s.magic==0x41525033 && s.version==3 && !s.reserved && !s.reserved0 && s.checksum==araudit::Checksum(s) && ticks==2);
         std::vector<unsigned> expected=variant==1?std::vector<unsigned>{1}:std::vector<unsigned>{1,2,3,7};
         for(unsigned c:variant==7?std::vector<unsigned>{4}:std::vector<unsigned>{4,5,6,8})expected.push_back(c);
@@ -74,5 +94,5 @@ int main(){
         bool leaked=false;for(unsigned i=0;i+target.size()<=sizeof s;++i)leaked|=!std::memcmp(bytes+i,target.data(),target.size());
         assert(!leaked);
     }
-    std::puts("PASS read-only enrollment context:32 actual-SDK adapter scenarios, client cleanup, list bounds/duplicate/invalid handles, independent failures and timing guards; no pair/connect/scan/event/key calls. NOT hardware proof.");
+    std::puts("PASS read-only context:32 actual-SDK adapter scenarios, client cleanup, list bounds/duplicates/handles, independent failures/timing; Post1 adds one-shot/refused/preflight no-call checks when enabled. NOT hardware proof.");
 }

@@ -3,6 +3,10 @@
 #include "../mc_mitm/source/amazon_remote/k7q3m7_descriptor.hpp"
 #include "../mc_mitm/source/amazon_remote/cached_characteristic_getter.hpp"
 #include "../mc_mitm/source/amazon_remote/service_uuid_census.hpp"
+#include "../mc_mitm/source/amazon_remote/connect_dispatch.hpp"
+#ifdef ARMODULE_CENTRAL_BOND_B1
+#include "../mc_mitm/source/amazon_remote/central_bond_wire.hpp"
+#endif
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -13,16 +17,46 @@
 #include <string>
 #include <vector>
 #include <cstdlib>
+#include <fstream>
 #include <unistd.h>
 using namespace amazon_remote;
 namespace {
 enum Scenario { Good, ZeroProperties, DuplicateInstances, SecurityError, SecurityTimeout, TruncatedMetadata, BadDescriptor, BadCccCompletion, PreBindingDelay, PostBindingDelay, PreMetadataDelay,
     DriverRecovered, DriverOpenError, DriverReadError, DriverWrongUuid, DriverRepeatedInstance, DriverUnknownInstance, DriverConflict, DriverBindingDelay, DriverReassigned, DriverZeroSelected, DriverDeviceShape };
 struct FakeState {
+#ifdef ARMODULE_HID_INFO_H1
+    unsigned info_mode{},info_reads{};
+    u8 info_flags=3;
+#endif
+#ifdef ARMODULE_RETRY_A5
+    ConnectionEvidenceWire connection_evidence;
+    Result evidence_result{};
+    bool inject_retry_callback{};
+#endif
+#ifdef ARMODULE_CENTRAL_BOND_B1
+    central_bond::Status bond{central_bond::Magic,central_bond::Version,central_bond::Store::Saved};
+    unsigned bond_opens{},bond_closes{},bond_queries{},bond_begins{},bond_cancels{};
+    Result bond_query_result{};
+#ifdef ARMODULE_WAKE_A3
+    central_bond::WakeStatus wake{};
+    unsigned wake_calls{};Result wake_result{};
+#endif
+#ifdef ARMODULE_NATIVE_PEER_C1
+    central_bond::PeerStatus peer{};
+    central_bond::HciTrace hci{central_bond::HciTraceMagic,1,0,0,1};
+    unsigned hci_reads{},hci_query_delay_ms{};Result hci_query_result{};
+    unsigned peer_prepares{},peer_queries{};
+    Result peer_prepare_result{},peer_query_result{};
+#endif
+#endif
     Scenario scenario=Good; u64 now=10000;
     BtdrvAddress target{{0x02,0xab,0xcd,0x12,0x34,0x56}}, address=target;
     bool connected=false, discovery=false, scan=false, security_requested=false, delayed=false;
     unsigned connects=0, characteristic_reads=0, security_reads=0, descriptor_reads=0, descriptor_getters=0;
+    unsigned scan_starts=0,scan_stops=0,scan_getters=0;
+    unsigned general_starts{},smart_starts{},general_stops{},smart_stops{};
+    Result general_start_result{},general_getter_result{},smart_getter_result{},general_stop_result{};
+    u8 general_count{};
     unsigned registers=0, writes=0, deregisters=0, disconnects=0, pre_metadata=0, post_metadata=0;
     unsigned driver_opens=0,driver_closes=0,driver_queries=0;
     bool system=false,fixture=false,native_requests=false,drop_native_events=false;
@@ -34,14 +68,32 @@ struct FakeState {
     unsigned pair_variant{},pair_calls{},paired_getters{},intent_calls{};bool listed{},system_enrollment{};
     unsigned user_opens{},user_closes{},sys_opens{},sys_closes{},flag_queries{},system_connection_queries{};
     bool context_active{};unsigned context_variant{};
+    unsigned preconnect_variant{},preconnect_system_queries{};
+    int preconnect_delay_ms{};
+    unsigned physical_log_delay_ms{},marker_log_delay_ms{};
     unsigned census_variant{};u64 cached_aruid=0xffffffffffffffffULL;
+    u32 firmware=MAKEHOSVERSION(22,5,0);u8 bond_enabled=1;Result enabled_result{},native_bond_result{};
+    unsigned native_bonds{},enabled_calls{},native_intents{},owner_change{};bool persist_native=true;
+    bool cleanup_test{},user_present{},system_present{},cleanup_unrelated{};
+    Result disconnect_result{},cleanup_user_result{},cleanup_system_result{};
+    u32 cleanup_handle=4;unsigned cleanup_variant{},owned_disconnects{},cleanup_queries{};
+    unsigned cleanup_user_calls{},cleanup_user_fail_at{};
+    unsigned cleanup_system_calls{},cleanup_final_variant{},user_disconnects{};
     std::deque<BtdrvBleEventInfo> events; std::vector<std::string> logs;
 } f;
 BtdrvGattAttributeUuid U(u16 value) { BtdrvGattAttributeUuid u{}; u.size=2; u.uuid[0]=value&255; u.uuid[1]=value>>8; return u; }
 u16 Short(const BtdrvGattAttributeUuid &u) { return u.size==2 ? u.uuid[0]|u16(u.uuid[1])<<8 : 0; }
 Result Invalid() { return MAKERESULT(Module_Libnx,LibnxError_BadInput); }
 Result Timeout() { return MAKERESULT(Module_Kernel,KernelError_TimedOut); }
-void Log(const char *line) { f.logs.emplace_back(line); }
+void Log(const char *line) {
+    f.logs.emplace_back(line);
+#ifdef ARMODULE_RETRY_A5
+    if(f.inject_retry_callback && std::string(line).starts_with("RETRY_A5_RETRY:"))
+        f.connection_evidence.events[f.connection_evidence.target_count++]={f.now,0,5,0,4,0,0};
+#endif
+    if (std::string(line).starts_with("Physical ZL sighting gate")) f.now+=f.physical_log_delay_ms;
+    if (std::string(line).starts_with("Persistent pending marker retained")) f.now+=f.marker_log_delay_ms;
+}
 bool Logged(const char *text) { return std::any_of(f.logs.begin(),f.logs.end(),[&](const auto &s) { return s.find(text)!=std::string::npos; }); }
 void AssertRawChunks() {
     unsigned chunks=0;
@@ -67,6 +119,9 @@ struct Sandbox {
     Sandbox() {
         char pattern[]="/tmp/amazon-input-host-XXXXXX"; auto *created=mkdtemp(pattern); assert(created); path=created;
         std::filesystem::current_path(path); std::filesystem::create_directories("sdmc:/config/amazon-remote");
+#ifdef ARMODULE_AUTOMATIC_A1
+        std::filesystem::create_directories("sdmc:/config/amazon-remote-auto-a1");
+#endif
     }
     ~Sandbox() {
         std::filesystem::current_path(previous);
@@ -105,12 +160,16 @@ void GoodFlow() {
     assert(Logged("HID_METADATA_RAW before_security index=0 offset=32 bytes="));
     assert(!f.driver_opens && !f.driver_queries); // Nonzero BTM cache needs no new driver session.
     AssertRawChunks();
-    const u8 keyboard[]{0x52,0x58,0}, released[]{0,0,0}, consumer[]{0x23,2,0,0};
+    const u8 keyboard[]{0x52,0x58,0}, released[]{0,0,0}, consumer[]{0x23,2,0,0}, consumer_released[]{0,0,0,0};
     Queue(4,0x1812,0x2a4d,0,keyboard,sizeof keyboard); assert(!Advance(remote,1));
     // Advance stops at Ready; explicit runtime polling is needed for reports.
     f.now+=20; assert(!remote.Poll(f.now)); assert((remote.Buttons()&(Up|Confirm))==(Up|Confirm));
     Queue(4,0x1812,0x2a4d,0,consumer,sizeof consumer); f.now+=20; assert(!remote.Poll(f.now)); assert(remote.Buttons()&Home);
     Queue(4,0x1812,0x2a4d,0,released,sizeof released); f.now+=20; assert(!remote.Poll(f.now)); assert(!(remote.Buttons()&(Up|Confirm)) && (remote.Buttons()&Home));
+    Queue(4,0x1812,0x2a4d,0,consumer_released,sizeof consumer_released); f.now+=20;
+    assert(!remote.Poll(f.now) && !remote.Buttons()); // Actual report-2 release, not Close masking a stuck Home.
+    Queue(4,0x1812,0x2a4d,0,consumer,sizeof consumer); f.now+=20;
+    assert(!remote.Poll(f.now) && remote.Buttons()==Home);
     assert(Logged("buttons") && Logged("INPUT_SUBSCRIPTIONS_READY"));
     remote.Close(); assert(!remote.Buttons() && f.deregisters==2 && !f.disconnects);
     assert(std::filesystem::exists("sdmc:/config/amazon-remote/link-test-pending.txt"));
@@ -150,6 +209,7 @@ bool EnrollmentIntentPersist(const EnrollmentRecord &r) {
     if(f.pair_variant==11)f.now+=2100;
     return f.pair_variant!=9;
 }
+#ifndef ARMODULE_RECONNECT_CHECK
 void EnrollmentFlow(unsigned variant,bool system_enrollment=false) {
     Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;f.pair_variant=variant;
     f.system_enrollment=system_enrollment;
@@ -211,6 +271,7 @@ void EnrollmentServiceGuards() {
     system.Close();assert(system.PairDevice(4,p) && system.PairedAddresses(p,addresses,10,&count));
     assert(f.system_opens==1 && f.system_closes==1 && !f.pair_calls && !f.paired_getters);
 }
+#endif
 void SystemFlow(unsigned variant) {
     Sandbox sandbox;f=FakeState{};f.system=true;
     if (variant==1) f.system_open_result=Invalid();
@@ -336,15 +397,27 @@ void MetadataDeadline(Scenario scenario) {
 }
 }
 bool serviceIsActive(Service *s) { return s->id!=0; }
-void serviceClose(Service *s) { assert(s->id==80); s->id=0; ++f.driver_closes; }
+void serviceClose(Service *s) {
+#ifdef ARMODULE_CENTRAL_BOND_B1
+    if(s->id==81){s->id=0;++f.bond_closes;return;}
+#endif
+    assert(s->id==80); s->id=0; ++f.driver_closes;
+}
 bool hosversionBefore(unsigned,unsigned,unsigned) { return false; }
+u32 hosversionGet(){return f.firmware;}
 Result smGetService(Service *s,const char *name) {
+#ifdef ARMODULE_CENTRAL_BOND_B1
+    if(std::string(name)=="mc"){assert(!s->id);s->id=81;++f.bond_opens;return 0;}
+#endif
     assert(std::string(name)=="btdrv" && !s->id); ++f.driver_opens;
     if(f.scenario==DriverOpenError) return Invalid();
     s->id=80;
     return 0;
 }
 Result FakeServiceDispatch(Service *s,u32 cmd,const void *input,std::size_t input_size,void *output,std::size_t output_size) {
+#ifdef ARMODULE_NATIVE_OWNER
+    if(cmd==100){assert(s->id==80 && !input && !input_size && output_size==1);++f.enabled_calls;*static_cast<u8*>(output)=f.bond_enabled;return f.enabled_result;}
+#endif
     assert(s->id==80 && output_size==sizeof(CachedCharacteristicOut));
     // This seam rejects command0, all radio/event/writing commands and wrong ABI.
     assert(cmd==80 || cmd==81); ++f.driver_queries;
@@ -385,11 +458,32 @@ Result btmuAcquireBleScanEvent(Event *event) { event->id=5; return 0; }
 Result btdevAcquireBleScanEvent(Event *event) { event->id=5; return 0; }
 Result btdevRegisterGattOperationNotification(const BtdrvGattAttributeUuid*) { return 0; }
 Result btdevUnregisterGattOperationNotification(const BtdrvGattAttributeUuid*) { return 0; }
-Result btmuStartBleScanForSmartDevice(const BtdrvGattAttributeUuid *uuid) { assert(uuid->size==16); f.scan=true; return 0; }
+Result btmuStartBleScanForGeneral(BtdrvBleAdvertisePacketParameter parameter) {
+    constexpr u8 pattern[]{4,0x27,2,0x7d,0,0};
+    assert(parameter.company_id==0x171 && !std::memcmp(parameter.pattern_data,pattern,6));
+    ++f.scan_starts;++f.general_starts;
+    if(f.general_start_result)return f.general_start_result;
+    f.scan=true;return 0;
+}
+Result btmuStopBleScanForGeneral() {
+    ++f.scan_stops;++f.general_stops;
+    if(f.general_stop_result)return f.general_stop_result;
+    f.scan=false;return 0;
+}
+Result btmuStartBleScanForSmartDevice(const BtdrvGattAttributeUuid *uuid) { assert(uuid->size==16); ++f.scan_starts;++f.smart_starts;f.scan=true; return 0; }
 Result btdevStartBleScanSmartDevice(const BtdrvGattAttributeUuid *uuid) { return btmuStartBleScanForSmartDevice(uuid); }
-Result btmuStopBleScanForSmartDevice() { f.scan=false; return 0; } Result btdevStopBleScanSmartDevice() { return btmuStopBleScanForSmartDevice(); }
+Result btmuStopBleScanForSmartDevice() { ++f.scan_stops;++f.smart_stops;f.scan=false; return 0; } Result btdevStopBleScanSmartDevice() { return btmuStopBleScanForSmartDevice(); }
 Result btdevGetBleConnectionInfoList(BtdrvBleConnectionInfo *info,u8 count,u8 *total) { return btmuBleGetConnectionState(info,count,total); }
 Result btmuBleGetConnectionState(BtdrvBleConnectionInfo *info,u8 count,u8 *total) {
+    if (f.cleanup_test) {
+        ++f.cleanup_queries;
+        if (++f.cleanup_user_calls==f.cleanup_user_fail_at) return 0x5528f;
+        if (f.cleanup_user_result) return f.cleanup_user_result;
+        *total=f.user_present?1:0;
+        if (*total) info[0]={f.cleanup_handle,f.address,{}};
+        if (f.cleanup_unrelated) info[(*total)++]={9,{{1,2,3,4,5,6}},{}};
+        return 0;
+    }
     if(!f.delayed && ((f.scenario==PreBindingDelay && Logged("FINGERPRINT_VERIFIED")) ||
                      (f.scenario==PostBindingDelay && Logged("SECURITY_READ_COMPLETED")))) {
         f.delayed=true; f.now+=90000;
@@ -398,8 +492,8 @@ Result btmuBleGetConnectionState(BtdrvBleConnectionInfo *info,u8 count,u8 *total
     if(f.connected) info[0]={4,f.address,{}};
     return 0;
 }
-Result btmuGetBleScanResultsForGeneral(BtdrvBleScanResult*,u8,u8 *total) { *total=0; return 0; }
-Result btmuGetBleScanResultsForSmartDevice(BtdrvBleScanResult*,u8,u8 *total) { *total=0; return 0; }
+Result btmuGetBleScanResultsForGeneral(BtdrvBleScanResult*,u8,u8 *total) { ++f.scan_getters;*total=f.general_count; return f.general_getter_result; }
+Result btmuGetBleScanResultsForSmartDevice(BtdrvBleScanResult*,u8,u8 *total) { ++f.scan_getters;*total=0; return f.smart_getter_result; }
 Result btmuBleConnect(BtdrvAddress target) { assert(!std::memcmp(&target,&f.target,sizeof target)); ++f.connects; f.connected=f.discovery=true; return 0; }
 static Result PairedDevices(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *out,u8 count,u8 *total,bool system) {
     assert((f.context_active || system==f.system_enrollment) && (!system || (f.system_opens==1 && !f.system_closes)));
@@ -422,7 +516,43 @@ static Result PairDevice(u32 connection,BtdrvBleAdvertisePacketParameter p,bool 
 Result btmuBleGetPairedDevices(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *out,u8 count,u8 *total) {return PairedDevices(p,out,count,total,false);}
 Result btmBleGetPairedAddresses(BtdrvBleAdvertisePacketParameter p,BtdrvAddress *out,u8 count,u8 *total) {return PairedDevices(p,out,count,total,true);}
 Result btmBleGetConnectionState(BtdrvBleConnectionInfo *out,u8 count,u8 *total) {
-    assert(f.context_active && f.system_opens==1 && !f.system_closes && count==16);++f.system_connection_queries;
+    assert(f.system_opens==f.system_closes+1 && count==16);
+    if (f.cleanup_test) {
+        ++f.cleanup_queries;
+        if (++f.cleanup_system_calls==2) {
+            switch (f.cleanup_final_variant) {
+            case 1:f.system_present=false;break;
+            case 2:f.user_present=false;break;
+            case 3:f.cleanup_handle=5;break;
+            case 4:f.cleanup_variant=1;break;
+            case 5:return 0x5528f;
+            case 6:f.now+=2001;break;
+            case 7:f.user_present=f.system_present=false;break;
+            case 8:f.address.address[0]^=1;break;
+            }
+        }
+        if (f.cleanup_system_result) return f.cleanup_system_result;
+        *total=f.system_present?1:0;
+        if (*total) out[0]={f.cleanup_handle,f.address,{}};
+        if (f.cleanup_unrelated) out[(*total)++]={9,{{1,2,3,4,5,6}},{}};
+        if (f.cleanup_variant==1) *total=count;
+        if (f.cleanup_variant==2) { *total=2;out[1]=out[0]; }
+        if (f.cleanup_variant==3) f.now+=5000;
+        return 0;
+    }
+    if (!f.context_active) {
+        ++f.preconnect_system_queries;
+        *total=f.preconnect_variant==4?16:f.preconnect_variant==5?17:
+            (f.preconnect_variant==1 || f.preconnect_variant==2 || f.preconnect_variant==6)?1:0;
+        if (*total && *total<count) {
+            out[0]={f.preconnect_variant==6?0u:4u,f.target,{}};
+            if (f.preconnect_variant==2)out[0].addr.address[0]^=1;
+        }
+        if (f.preconnect_variant==8)f.now+=60001;
+        f.now+=f.preconnect_delay_ms;
+        return f.preconnect_variant==3?71:0;
+    }
+    ++f.system_connection_queries;
     *total=f.context_variant==1?0:f.context_variant==3?16:1;
     out[0]={f.context_variant==2?5u:4u,f.target,{}};
     return f.context_variant==4?71:0;
@@ -439,6 +569,16 @@ Result btmuBlePairDevice(u32 connection,BtdrvBleAdvertisePacketParameter p) {ret
 Result btmBlePairDevice(u32 connection,BtdrvBleAdvertisePacketParameter p) {return PairDevice(connection,p,true);}
 Result btdevConnectToGattServer(BtdrvAddress target) { return btmuBleConnect(target); }
 Result btdevDisconnectFromGattServer(u32) { ++f.disconnects; return Invalid(); }
+Result btmuBleDisconnect(u32 handle) {
+    (void)handle;++f.user_disconnects;return 0x5528f;
+}
+Result btmBleDisconnect(u32 handle) {
+    assert(f.cleanup_test && handle==4 && f.user_present && f.system_present);
+    assert(f.system_opens==1 && !f.system_closes && !f.user_disconnects);
+    assert(f.cleanup_system_calls>=2 && f.cleanup_user_calls>=4);
+    assert(!std::memcmp(&f.address,&f.target,sizeof f.target));
+    ++f.owned_disconnects;return f.disconnect_result;
+}
 Result btdevConfigureBleMtu(u32 connection,u16 mtu) { assert(!f.system && connection==4 && mtu==512); return 0; }
 Result btdevGetBleMtu(u32 connection,u16 *mtu) { assert(!f.system && connection==4); *mtu=247; return 0; }
 Result btdevGetGattServices(u32 connection,BtdevGattService *services,u8 count,u8 *total) {
@@ -475,7 +615,15 @@ Result btmuGetGattCharacteristics(u32 connection,u16 service,BtmGattCharacterist
         const bool driver_case=f.scenario>=DriverRecovered;
         chars[i+1].properties=f.security_requested && f.scenario!=ZeroProperties && !driver_case ? 0x12 : 0;
         if(f.security_requested && f.scenario==DriverConflict && i==1) chars[i+1].properties=0x12;
-    } return 0;
+    }
+#ifdef ARMODULE_HID_INFO_H1
+    if (f.info_mode != 1) {
+        chars[4]={};chars[4].uuid=U(0x2a4a);chars[4].handle=0x28;*total=5;
+        if (f.info_mode==2) {chars[5]=chars[4];chars[5].handle=0x2a;*total=6;}
+        if (f.info_mode==9) chars[4].instance_id=256;
+    }
+#endif
+    return 0;
 }
 Result btmuGetGattDescriptors(u32 connection,u16 characteristic,BtmGattDescriptor *descs,u8 count,u8 *total) {
     assert(!f.system || f.fixture);
@@ -517,6 +665,17 @@ Result btLeClientReadCharacteristic(u32 connection,bool primary,const BtdrvGattI
     assert(!f.native_requests || f.fixture);
     assert(connection==4 && primary); ++f.characteristic_reads;
     const auto uuid=Short(characteristic->uuid);
+#ifdef ARMODULE_HID_INFO_H1
+    if (uuid==0x2a4a) {
+        assert(Short(service->uuid)==0x1812 && !auth && f.security_requested && f.writes==2 && f.registers==2);
+        ++f.info_reads;
+        if(f.info_mode==4) return 0;
+        if(f.info_mode==5) return Invalid();
+        const u8 value[]{0x11,0x01,0,f.info_flags};
+        Queue(0,0x1812,uuid,0,value,f.info_mode==3?3:4,f.info_mode==6?5:0);
+        return 0;
+    }
+#endif
     if(uuid==0x2a50) { assert(Short(service->uuid)==0x180a && auth==0); const u8 pnp[]{2,0x71,1,0x27,4,0x60,0}; Queue(0,0x180a,uuid,0,pnp,sizeof pnp); }
     else {
         assert(uuid==0x2a4b && Short(service->uuid)==0x1812);
@@ -557,7 +716,80 @@ Result btGetLeEventInfo(void *out,std::size_t size,BtdrvBleEventType *type) {
     assert(size==sizeof(BtdrvBleEventInfo) && !f.events.empty()); std::memcpy(out,&f.events.front(),size); f.events.pop_front(); *type=BtdrvBleEventType_ClientNotify; return 0;
 }
 Result FakeServiceDispatchInput(Service *s,u32 cmd,const void *input,std::size_t size,FakeDispatchParams p) {
+#ifdef ARMODULE_CENTRAL_BOND_B1
+    if(s->id==81){
+#ifdef ARMODULE_RETRY_A5
+        if(cmd==65004){
+            assert(!input && !size && p.buffers[0].size==sizeof f.connection_evidence);
+            std::memcpy(const_cast<void*>(p.buffers[0].data),&f.connection_evidence,sizeof f.connection_evidence);
+            return f.evidence_result;
+        }
+#endif
+#ifdef ARMODULE_WAKE_A3
+        if(cmd==central_bond::WakeStatusCommand){
+            assert(!input && !size && !p.in_send_pid && p.buffer_attrs[0]==5 && p.buffers[0].size==sizeof f.wake);
+            std::memcpy(const_cast<void*>(p.buffers[0].data),&f.wake,sizeof f.wake);return 0;
+        }
+        if(cmd==central_bond::WakeCommand){
+            assert(p.in_send_pid && input && size==32 && !f.connected && !f.context_active);
+            central_bond::WakeRequest r{};std::memcpy(&r,static_cast<const u8*>(input)+8,sizeof r);
+            assert(r.serial==f.wake.serial && r.nonce==f.bond.nonce && r.connection==f.bond.connection && r.owner_epoch==f.bond.owner_epoch && !r.reserved);
+            ++f.wake_calls;
+            if(!f.wake_result){const auto generation=f.bond.generation;f.bond={};f.bond.store=central_bond::Store::Saved;f.bond.generation=generation;}
+            return f.wake_result;
+        }
+#endif
+#ifdef ARMODULE_NATIVE_PEER_C1
+        if(cmd==central_bond::PeerStatusCommand){
+            assert(!input && !size && !p.in_send_pid && p.buffer_attrs[0]==5 && p.buffers[0].size==sizeof f.peer);
+            ++f.peer_queries;std::memcpy(const_cast<void*>(p.buffers[0].data),&f.peer,sizeof f.peer);return f.peer_query_result;
+        }
+        if(cmd==central_bond::HciTraceCommand){
+            assert(!input && !size && p.buffers[0].size==sizeof f.hci);
+            ++f.hci_reads;f.now+=f.hci_query_delay_ms;
+            std::memcpy(const_cast<void*>(p.buffers[0].data),&f.hci,sizeof f.hci);return f.hci_query_result;
+        }
+        if(cmd==central_bond::PreparePeerCommand){
+            assert(p.in_send_pid && input && size==24 && !f.peer_prepares && !f.connected && f.bond.store==central_bond::Store::Saved);
+            u64 pid{};std::memcpy(&pid,input,8);assert(!pid);
+            central_bond::PreparePeer r{};std::memcpy(&r,static_cast<const u8*>(input)+8,sizeof r);
+            assert(r.nonce && !r.reserved && r.capture_deadline_ms>f.now);
+            ++f.peer_prepares;f.peer.phase=central_bond::PeerPhase::Waiting;f.peer.nonce=r.nonce;
+            f.peer.started_ms=f.now;f.peer.capture_deadline_ms=r.capture_deadline_ms;f.peer.generation=f.bond.generation;
+            return f.peer_prepare_result;
+        }
+#endif
+        if(cmd==central_bond::StatusCommand){
+            assert(!input && !size && !p.in_send_pid && p.buffer_attrs[0]==5 &&
+                p.buffers[0].size==sizeof f.bond && p.buffers[0].data);
+            ++f.bond_queries;
+            std::memcpy(const_cast<void*>(p.buffers[0].data),&f.bond,sizeof f.bond);
+            return f.bond_query_result;
+        }
+        assert(p.in_send_pid && input && !p.buffer_attrs[0] && !p.buffers[0].size);
+        u64 pid{};std::memcpy(&pid,input,sizeof pid);assert(!pid);
+        if(cmd==central_bond::BeginCommand){
+            assert(size==24 && !f.bond_begins && f.bond.store==central_bond::Store::Saved && f.connected);
+            central_bond::Begin begin{};std::memcpy(&begin,static_cast<const u8*>(input)+8,sizeof begin);
+            assert(begin.nonce && begin.connection==4 && begin.owner_epoch);
+            ++f.bond_begins;f.bond.nonce=begin.nonce;f.bond.connection=begin.connection;
+            f.bond.owner_epoch=begin.owner_epoch;f.bond.phase=central_bond::Phase::Encrypting;
+        }else{
+            assert(cmd==central_bond::CancelCommand && size==8);
+            ++f.bond_cancels;f.bond.phase=central_bond::Phase::Cancelled;
+        }
+        return 0;
+    }
+#endif
     assert(s->id==80 && f.native_requests && !p.in_send_pid);
+#ifdef ARMODULE_NATIVE_OWNER
+    if(cmd==10){
+        assert(size==12 && f.native_intents==1 && !f.native_bonds && !f.pair_calls);
+        const auto *raw=static_cast<const u8*>(input);u32 transport{};std::memcpy(&transport,raw+8,4);
+        assert(!std::memcmp(raw,f.target.address,6) && !raw[6] && !raw[7] && transport==2 && !p.buffer_attrs[0]);
+        ++f.native_bonds;return f.native_bond_result;
+    }
+#endif
     assert(cmd==90 || cmd==91 || cmd==93 || cmd==94 || cmd==95);++f.native_calls;
     const auto *raw=static_cast<const u8*>(input);assert(raw[0]==1 && !raw[2] && !raw[3]);
     u32 connection{};std::memcpy(&connection,raw+4,4);assert(connection==4);
@@ -582,7 +814,400 @@ Result FakeServiceDispatchInput(Service *s,u32 cmd,const void *input,std::size_t
     return rc;
 }
 u64 appletGetAppletResourceUserId(){return f.cached_aruid;}
+#ifdef ARMODULE_NATIVE_OWNER
+bool PersistNative(const arnativebond::Record &r){
+    assert(arnativebond::Valid(r) && r.state==unsigned(arnativebond::State::IntentSaved) && !r.request_issued && !f.native_bonds);
+    ++f.native_intents;
+    if(f.owner_change==1)f.address.address[0]^=1;
+    if(f.owner_change==2)f.context_variant=2;
+    if(f.owner_change==3)f.now+=2100;
+    return f.persist_native;
+}
+void NativeOwnerFlow(unsigned variant){
+    Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;
+    LibnxSession remote(Log,true,true,true,true,variant!=12,true);Start(remote);
+    if(variant!=11)assert(!Advance(remote) && remote.Ready());
+    f.context_active=true;
+    arnativebond::OwnerEnvironment env{};env.pad_attached=env.log_healthy=true;
+    env.status.instance=42;env.status.now_ms=f.now;env.status.state=unsigned(armodule::State::Ready);
+    env.status.output_attached=1;env.status.successful_writes=1;
+    env.startup.instance=42;env.startup.now_ms=10000;env.startup.stage=unsigned(armodule::StartupStage::Status);
+    auto &c=env.context;c.instance=42;c.expected_handle=4;c.snapshot.begin_ms=f.now-1;c.snapshot.end_ms=f.now;
+    c.snapshot.user_open=c.snapshot.btm_open=0;
+    c.snapshot.user_connections.list.result=c.snapshot.system_connections.list.result=0;
+    c.snapshot.user_connections.list.count=c.snapshot.system_connections.list.count=1;
+    c.snapshot.user_connections.list.matches=c.snapshot.system_connections.list.matches=1;
+    c.snapshot.user_connections.target_handle=c.snapshot.system_connections.target_handle=4;
+    switch(variant){
+        case 1:env.pad_attached=false;break;case 2:env.log_healthy=false;break;
+        case 3:env.startup.instance=43;break;case 4:env.status.now_ms-=2100;break;
+        case 5:env.status.buttons=1;break;case 6:env.status.acknowledged_buttons=1;break;
+        case 7:env.status.state=unsigned(armodule::State::Stopped);break;case 8:c.expected_handle=5;break;
+        case 9:c.snapshot.begin_ms=1;c.snapshot.end_ms=2;f.now=70000;env.status.now_ms=f.now;break;
+        case 10:{const u8 key[]{0x52,0,0};Queue(4,0x1812,0x2a4d,0,key,sizeof key);f.now+=20;assert(!remote.Poll(f.now));break;}
+        case 13:remote.Close();break;case 14:f.address.address[0]^=1;break;
+        case 15:f.context_variant=1;break;case 16:f.context_variant=2;break;
+        case 17:f.context_variant=3;break;case 18:f.context_variant=4;break;
+        case 19:f.bond_enabled=0;break;case 20:f.enabled_result=77;break;case 21:f.persist_native=false;break;
+        case 22:f.owner_change=1;break;case 23:f.owner_change=2;break;case 24:f.owner_change=3;break;
+        case 25:f.native_bond_result=78;break;case 26:f.firmware=MAKEHOSVERSION(22,4,0);break;
+        case 29:c.before_binding=1;break;case 30:env.status.successful_writes=0;break;
+        case 32:f.now+=1800000;env.status.now_ms=f.now;c.snapshot.begin_ms=f.now-1;c.snapshot.end_ms=f.now;break;
+        case 35:f.bond_enabled=0xff;break;
+    }
+    env.status.reserved=armodule::StatusChecksum(env.status);env.startup.checksum=armodule::StartupChecksum(env.startup);
+    c.snapshot.checksum=araudit::Checksum(c.snapshot);c.checksum=EnrollmentContextChecksum(c);
+    if(variant==31)++c.checksum;
+    const auto opens=f.system_opens,users=f.user_opens,drivers=f.driver_opens,closed=f.driver_closes,system_closed=f.system_closes;
+    const auto requests=f.native_calls,connects=f.connects,writes=f.writes;
+    const auto r=remote.NativeBondOnce(variant==27?0:6,env,variant==28?nullptr:PersistNative);
+    assert(variant==27?!arnativebond::ValidOwnerResult(r):arnativebond::ValidOwnerResult(r));
+    assert(r.trial.instance==42 && r.trial.request_issued==unsigned(variant==0 || variant==25));
+    assert(f.native_bonds==unsigned(variant==0 || variant==25) && !f.pair_calls);
+    assert(f.system_opens==opens && f.user_opens==users && f.driver_opens==drivers && f.driver_closes==closed && f.system_closes==system_closed);
+    assert(f.native_calls==requests && f.connects==connects && f.writes==writes);
+    if(variant==0){assert(r.count==2 && f.native_intents==1 && f.enabled_calls==1);
+        assert(arnativebond::MatchesOwnerCommand(r,42,6) && !arnativebond::MatchesOwnerCommand(r,43,6) && !arnativebond::MatchesOwnerCommand(r,42,7));
+        for(unsigned i=0;i<sizeof r;++i){auto bad=r;reinterpret_cast<u8*>(&bad)[i]^=1;assert(!arnativebond::ValidOwnerResult(bad));}}
+    const auto bonds=f.native_bonds,intents=f.native_intents;
+    const auto again=remote.NativeBondOnce(7,env,PersistNative);
+    assert(arnativebond::ValidOwnerResult(again) && !again.trial.request_issued && !again.count && f.native_bonds==bonds && f.native_intents==intents);
+    remote.Close();assert(!f.disconnects);
+}
+#endif
+void OwnedDisconnectFlow(unsigned variant) {
+    Sandbox sandbox;f=FakeState{};f.system=f.native_requests=variant!=22;
+    LibnxSession remote(Log,true,true,f.system,f.native_requests,true);
+    if (variant==5) { assert(!remote.InitializeIdentityTest(f.target));assert(!remote.StartLinkOnlyScan(f.now)); }
+    else {
+        Start(remote);
+        if (variant!=4) assert(!Advance(remote) && remote.Ready());
+    }
+    f.cleanup_test=true;f.user_present=f.system_present=true;
+    if (variant==1) f.disconnect_result=71;
+    if (variant==2) f.address.address[0]^=1;
+    if (variant==3) f.cleanup_handle=5;
+    if (variant==6) f.user_present=f.system_present=false;
+    if (variant==7) f.user_present=false;
+    if (variant==8) f.cleanup_system_result=72;
+    if (variant==9) f.cleanup_user_result=73;
+    if (variant==10) f.cleanup_variant=1;
+    if (variant==11) f.cleanup_variant=2;
+    if (variant==12) f.cleanup_handle=0xffffffff;
+    if (variant==21) f.native_fail_command=95;
+    if (variant==23) remote.Close();
+    if (variant==24) f.cleanup_unrelated=true;
+    const auto reads=f.characteristic_reads,writes=f.writes,bonds=f.native_bonds,pairs=f.pair_calls;
+    const auto now=f.now;
+    const auto begin=remote.BeginOwnedDisconnect(now);
+    assert(!remote.Buttons() && remote.Poll(f.now)); // No new input after stop begins.
+    assert(f.characteristic_reads==reads && f.writes==writes && f.native_bonds==bonds && f.pair_calls==pairs);
+    if (variant==5 || variant==6) {
+        assert(!begin && !f.owned_disconnects && remote.GetDisconnectState()==DisconnectState::Confirmed);
+    } else if ((variant>=1 && variant<=12) || (variant>=21 && variant<=23)) {
+        assert(begin && remote.GetDisconnectState()==DisconnectState::Failed);
+        assert(f.owned_disconnects==unsigned(variant==1));
+    } else {
+        assert(!begin && f.owned_disconnects==1 && remote.GetDisconnectState()==DisconnectState::Waiting);
+        assert(!Logged("CONFIRMED_ABSENT")); // Accepted IPC is not disconnection.
+        const auto queries=f.cleanup_queries;
+        assert(!remote.BeginOwnedDisconnect(f.now) && f.owned_disconnects==1);
+        f.now+=99;assert(!remote.PollOwnedDisconnect(f.now) && f.cleanup_queries==queries);
+        if (variant==13) f.now=now+5000;
+        else if (variant==14) f.now=now-1;
+        else {
+            ++f.now;
+            if (variant==15) f.cleanup_system_result=74;
+            if (variant==16) f.address.address[0]^=1;
+            if (variant==18) f.cleanup_variant=3;
+            if (variant==19) remote.Close();
+        }
+        if (variant==0 || variant==17 || variant==20 || variant==24) {
+            // A user-only disappearance must not be reported as a closed link.
+            f.user_present=false;
+            assert(!remote.PollOwnedDisconnect(f.now));
+            assert(remote.GetDisconnectState()==DisconnectState::Waiting);
+            if (variant==17) {
+                f.now=now+5000;assert(remote.PollOwnedDisconnect(f.now));
+            } else {
+                f.system_present=false;f.now+=100;
+                if (variant==20) f.cleanup_user_result=75;
+                const auto result=remote.PollOwnedDisconnect(f.now);
+                assert(bool(result)==(variant==20));
+                if (!result) assert(remote.GetDisconnectState()==DisconnectState::Confirmed);
+            }
+        } else assert(remote.PollOwnedDisconnect(f.now));
+        if (variant && variant!=24) assert(remote.GetDisconnectState()==DisconnectState::Failed);
+    }
+    const auto requests=f.owned_disconnects,queries=f.cleanup_queries;
+    const auto result=remote.DisconnectResult();
+    assert(remote.BeginOwnedDisconnect(f.now)==result && remote.PollOwnedDisconnect(f.now)==result);
+    assert(f.owned_disconnects==requests && f.cleanup_queries==queries); // No retries after terminal state.
+    remote.Close();remote.Close();
+    assert(f.owned_disconnects==requests && !f.disconnects);
+    if (variant!=5) assert(std::filesystem::exists("sdmc:/config/amazon-remote/link-test-pending.txt"));
+    assert(f.characteristic_reads==reads && f.writes==writes && f.native_bonds==bonds && f.pair_calls==pairs);
+}
+void DisconnectAttribution(unsigned variant) {
+    Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;
+    LibnxSession remote(Log,true,true,true,true,true);
+    Start(remote);assert(!Advance(remote) && remote.Ready());
+    f.cleanup_test=true;f.user_present=f.system_present=true;
+    constexpr Result error=0x5528f;
+    const char *expected=nullptr;
+    switch (variant) {
+    case 0:f.cleanup_system_result=error;expected="stage=system_presence Result=0005528f";break;
+    case 1:f.cleanup_user_fail_at=1;expected="stage=user_presence Result=0005528f";break;
+    case 2:f.cleanup_user_fail_at=2;expected="stage=subscription_binding index=0 Result=0005528f";break;
+    case 3:f.cleanup_user_fail_at=3;expected="stage=subscription_binding index=1 Result=0005528f";break;
+    case 4:f.native_fail_command=95;expected="stage=subscription_deregister index=0 Result=0005528f";break;
+    case 5:f.cleanup_user_fail_at=4;expected="stage=final_binding Result=0005528f";break;
+    case 6:f.disconnect_result=error;expected="stage=btm_disconnect Result=0005528f";break;
+    case 7:expected="stage=system_presence Result=0005528f";break;
+    case 8:expected="stage=user_presence Result=0005528f";break;
+    }
+    const auto reads=f.characteristic_reads,writes=f.writes,pairs=f.pair_calls,bonds=f.native_bonds;
+    const auto begin=remote.BeginOwnedDisconnect(f.now);
+    if (variant<7) {
+        assert(begin && remote.GetDisconnectState()==DisconnectState::Failed);
+        assert(f.owned_disconnects==unsigned(variant==6));
+        assert(!Logged("OWNED_DISCONNECT requested handle="));
+    } else {
+        assert(!begin && remote.GetDisconnectState()==DisconnectState::Waiting && f.owned_disconnects==1);
+        if (variant==7)f.cleanup_system_result=error;
+        if (variant==8)f.cleanup_user_result=error;
+        if (variant<9) {f.now+=100;assert(remote.PollOwnedDisconnect(f.now)==error);}
+        else {
+            for (unsigned i=0;i<40;++i) {f.now+=100;assert(!remote.PollOwnedDisconnect(f.now));}
+            const auto count=std::count_if(f.logs.begin(),f.logs.end(),[](const auto &s) {
+                return s.starts_with("DISCONNECT_STEP stage=system_presence") || s.starts_with("DISCONNECT_STEP stage=user_presence");
+            });
+            assert(count==2); // Unchanged polling must not flood the log.
+            f.user_present=f.system_present=false;f.now+=100;assert(!remote.PollOwnedDisconnect(f.now));
+            assert(remote.GetDisconnectState()==DisconnectState::Confirmed);
+        }
+    }
+    if (expected)assert(Logged(expected) && remote.GetDisconnectState()==DisconnectState::Failed);
+    for(const auto &s:f.logs)if(s.starts_with("DISCONNECT_STEP")) {
+        assert(s.size()<192 && s.find("address=")==std::string::npos && s.find("key=")==std::string::npos);
+    }
+    const auto requests=f.owned_disconnects,queries=f.cleanup_queries;
+    remote.BeginOwnedDisconnect(f.now);remote.PollOwnedDisconnect(f.now);
+    assert(f.owned_disconnects==requests && f.cleanup_queries==queries);
+    remote.Close();
+    assert(f.owned_disconnects==requests && !f.disconnects);
+    assert(f.characteristic_reads==reads && f.writes==writes && f.pair_calls==pairs && f.native_bonds==bonds);
+    assert(std::filesystem::exists("sdmc:/config/amazon-remote/link-test-pending.txt"));
+}
+void SystemDisconnectContract(unsigned variant) {
+    Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;f.cached_aruid=0;
+    LibnxSession remote(Log,true,true,true,true,true);
+    Start(remote);assert(!Advance(remote) && remote.Ready());
+    f.cleanup_test=true;f.user_present=f.system_present=true;
+    f.cleanup_final_variant=variant;
+    const auto result=remote.BeginOwnedDisconnect(f.now);
+    assert(bool(result)==(variant!=0));
+    assert(f.owned_disconnects==unsigned(variant==0) && !f.user_disconnects);
+    assert(f.system_opens==1 && !f.system_closes && !f.pair_calls && !f.native_bonds);
+    if (!variant) {
+        assert(remote.GetDisconnectState()==DisconnectState::Waiting);
+        f.user_present=f.system_present=false;f.now+=100;
+        assert(!remote.PollOwnedDisconnect(f.now));
+        assert(remote.GetDisconnectState()==DisconnectState::Confirmed);
+    } else assert(remote.GetDisconnectState()==DisconnectState::Failed);
+    const auto requests=f.owned_disconnects;
+    remote.BeginOwnedDisconnect(f.now);remote.PollOwnedDisconnect(f.now);remote.Close();
+    assert(f.owned_disconnects==requests && !f.user_disconnects && !f.disconnects);
+    assert(std::filesystem::exists("sdmc:/config/amazon-remote/link-test-pending.txt"));
+}
+void ConnectBoundaryReplay() {
+    Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;
+    LibnxSession remote(Log,true,true,true,true,true,true);
+    assert(!remote.InitializeIdentityTest(f.target) && !remote.StartLinkOnlyScan(f.now));
+    auto sighting=Sighting();f.now+=2977;f.preconnect_delay_ms=36;
+    const auto rc=remote.ConfirmObservedLink(sighting,f.now,f.now+38000);
+#ifdef ARMODULE_CONNECT_DISPATCH
+    assert(!rc && f.connects==1 && Logged("P3_DISPATCH_REQUEST"));
+    assert(remote.ConfirmObservedLink(sighting,f.now,f.now+38000) && f.connects==1);
+#else
+    assert(rc && !f.connects && Logged("Final presence gate expired/invalid"));
+#endif
+    assert(!f.pair_calls && !f.native_bonds && !f.registers && !f.writes);
+    assert(std::filesystem::exists("sdmc:/config/amazon-remote/link-test-pending.txt"));
+    remote.Close();
+}
+#ifdef ARMODULE_CONNECT_DISPATCH
+void ConnectDispatchBoundaries(unsigned variant) {
+    Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;
+    LibnxSession remote(Log,true,true,true,true,true,true);
+    assert(!remote.InitializeIdentityTest(f.target) && !remote.StartLinkOnlyScan(f.now));
+    auto sighting=Sighting();f.now+=3000;
+    auto deadline=f.now+38000, caller_now=f.now;
+    bool admitted=false,marked=true;
+    switch(variant) {
+    case 0: f.preconnect_delay_ms=250;admitted=true;break;
+    case 1: f.preconnect_delay_ms=251;break;
+    case 2: ++f.now;marked=false;break;
+    case 3: sighting.captured_boot_ms=f.now+1;marked=false;break;
+    case 4: sighting.captured_boot_ms=9999;marked=false;break;
+    case 5: f.preconnect_delay_ms=-1;break;
+    case 6: deadline=f.now+36;f.preconnect_delay_ms=36;break;
+    case 7: f.physical_log_delay_ms=100;f.marker_log_delay_ms=150;admitted=true;break;
+    case 8: f.physical_log_delay_ms=100;f.marker_log_delay_ms=151;break;
+    case 9: ++f.now;caller_now-=2000;marked=false;break;
+    case 10: sighting.raw[7]^=1;marked=false;break;
+    case 11: sighting.raw[323]=11;marked=false;break;
+    case 12: sighting.raw[15]^=1;marked=false;break;
+    case 13: deadline=f.now;marked=false;break;
+    case 14: sighting.captured_boot_ms=f.now;f.preconnect_delay_ms=251;break;
+    case 15: sighting.captured_boot_ms=f.now;admitted=true;break;
+    case 16: sighting.version++;marked=false;break;
+    }
+    const auto rc=remote.ConfirmObservedLink(sighting,caller_now,deadline);
+    assert(f.connects==unsigned(admitted) && (!admitted || !rc));
+    assert(std::filesystem::exists("sdmc:/config/amazon-remote/link-test-pending.txt")==marked);
+    assert(f.preconnect_system_queries==unsigned(marked));
+    assert(!f.pair_calls && !f.native_bonds && !f.registers && !f.writes);
+    if(marked) {
+        assert(remote.ConfirmObservedLink(sighting,f.now,deadline));
+        assert(f.connects==unsigned(admitted));
+    }
+    if(variant==2 || variant==9) {
+        assert(!remote.LinkAttempted());
+        // A genuinely fresh subsequent physical decision, not an auto-retry.
+        assert(!remote.ConfirmObservedLink(Sighting(),f.now,f.now+38000) && f.connects==1);
+    }
+    remote.Close();assert(!f.disconnects && f.scan_stops==1);
+}
+#endif
 int main() {
+    ConnectBoundaryReplay();
+#ifdef ARMODULE_CONNECT_DISPATCH
+    for(unsigned v=0;v<17;++v)ConnectDispatchBoundaries(v);
+    std::cout<<"PASS P3: live 2977+36ms regression and17 timing/identity/lease boundaries, real-clock admission,250ms budget including logs, no retry/bond/output. NOT hardware proof.\n";
+#else
+    std::cout<<"PASS legacy negative control: live2977+36ms sequence still rejects before connect.\n";
+#endif
+    for (unsigned variant=0;variant<9;++variant) SystemDisconnectContract(variant);
+    std::cout<<"PASS D3 system disconnect:9 zero-applet-identity/final-binding cases; one existing system client, no user-call fallback, no bond or guard removal. NOT hardware proof.\n";
+    for (unsigned variant=0;variant<10;++variant) DisconnectAttribution(variant);
+    std::cout<<"PASS D2 cleanup attribution: same service error at nine distinct call sites, bounded unchanged-poll logging, no fallback or retry. NOT hardware proof.\n";
+    for (unsigned variant=0;variant<25;++variant) OwnedDisconnectFlow(variant);
+    std::cout<<"PASS owned-link teardown:25 actual adapter scenarios, accepted versus completed, dual-view absence, unrelated connection preservation, no address-only adoption, timeout/error/rebound guards, no bond mutation or automatic marker removal. NOT hardware proof.\n";
+#ifdef ARMODULE_MANUFACTURER_SCAN_CHECK
+    for(unsigned variant=0;variant<6;++variant) {
+        Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;
+        if(variant==1)f.general_start_result=0x888;
+        if(variant==2)f.general_getter_result=0x888;
+        if(variant==3)f.general_count=11;
+        if(variant==4)f.smart_getter_result=0x888;
+        if(variant==5)f.general_stop_result=0x888;
+        LibnxSession remote(Log,true,true,true,true,true,true);
+        assert(!remote.InitializeIdentityTest(f.target));
+        const auto start=remote.StartLinkOnlyScan(f.now);
+        assert(bool(start)==(variant==1) && f.general_starts==1 && !f.smart_starts);
+        if(!start) {
+            const auto polled=remote.Poll(f.now);
+            assert(bool(polled)==(variant==2 || variant==3));
+            if(!polled) {
+                const auto reads=f.scan_getters;f.now+=499;
+                assert(!remote.Poll(f.now) && f.scan_getters==reads);
+            }
+        }
+        assert(!f.connects && !f.pair_calls && !f.native_bonds && !f.registers && !f.writes);
+        remote.Close();
+        assert(f.general_stops==unsigned(variant!=1) && !f.smart_stops);
+        if(variant==5)assert(Logged("stop own filtered scan"));
+    }
+    std::cout<<"PASS manufacturer S2: exact8-byte public general filter, primary start/getter/count errors, secondary smart error isolation,500ms polling, corresponding own-stop only, no automatic link/bond/output. NOT hardware proof.\n";
+#endif
+#ifdef ARMODULE_SCAN_ASSISTED_CHECK
+    for (unsigned variant=0;variant<6;++variant) {
+        Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;
+        LibnxSession remote(Log,true,true,true,true,true,true);
+        assert(!remote.InitializeIdentityTest(f.target));
+        assert(!remote.StartLinkOnlyScan(f.now));
+        assert(f.scan_starts==1 && !f.connects && !f.pair_calls && !f.native_bonds);
+        assert(!remote.Poll(f.now) && !f.connects); // Scanning never connects itself.
+        auto sighting=Sighting();
+        if(variant==1)sighting.captured_boot_ms-=3001;
+        if(variant==2)sighting.raw[7]^=1;
+        if(variant==3)sighting.raw[15]^=1;
+        if(variant==4)sighting.raw[323]=11;
+        if(variant==5){std::ofstream marker("sdmc:/config/amazon-remote/link-test-pending.txt");marker<<"preserved";}
+        const auto rc=remote.ConfirmObservedLink(sighting,f.now,f.now+60000);
+        assert(f.connects==unsigned(variant==0));
+        if(variant==0) {
+            assert(!rc && remote.ConfirmObservedLink(sighting,f.now,f.now+60000));
+            assert(f.connects==1 && !Advance(remote) && remote.Ready());
+            assert(remote.FingerprintObserved() && remote.SecurityReadObserved());
+        }
+        remote.Close();
+        assert(f.scan_starts==1 && f.scan_stops==1 && !f.disconnects && !f.pair_calls && !f.native_bonds);
+#ifdef ARMODULE_MANUFACTURER_SCAN_CHECK
+        assert(f.general_starts==1 && f.general_stops==1 && !f.smart_starts && !f.smart_stops);
+#else
+        assert(f.smart_starts==1 && f.smart_stops==1 && !f.general_starts && !f.general_stops);
+#endif
+    }
+    std::cout<<"PASS scan-assisted:6 actual SDK adapter cases; no auto-connect, one sighting-gated request, stale/wrong-address/wrong-ad/count/marker refusal, original fingerprint/input path and owned-scan cleanup. NOT hardware proof.\n";
+#endif
+#ifdef ARMODULE_KNOWN_RECONNECT_CHECK
+    for (unsigned variant=0;variant<14;++variant) {
+        Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;
+        LibnxSession remote(Log,true,true,true,true,true,true);
+        assert(!remote.InitializeIdentityTest(f.target));
+        assert(!remote.PrepareKnownReconnect(f.now) && remote.KnownReconnectPrepared());
+        assert(remote.PrepareKnownReconnect(f.now));
+        assert(remote.StartLinkOnlyScan(f.now));
+        if(variant<=8)f.preconnect_variant=variant;
+        if(variant==7)f.connected=true;
+        auto request_time=f.now,deadline=f.now+60000;
+        if(variant==9)++request_time;
+        if(variant==10)request_time-=3001;
+        if(variant==11)++deadline;
+        if(variant==12)deadline=f.now;
+        if(variant==13){std::ofstream marker("sdmc:/config/amazon-remote/link-test-pending.txt");marker<<"preserved";}
+        const auto rc=remote.ConfirmKnownReconnect(request_time,deadline);
+        const bool admitted=variant==0 || variant==2;
+        assert(bool(rc)==!admitted && f.connects==unsigned(admitted));
+        assert(!f.scan_starts && !f.scan_stops && !f.scan_getters && !f.pair_calls && !f.native_bonds);
+        if(admitted) {
+            assert(remote.ConfirmKnownReconnect(f.now,deadline) && f.connects==1);
+            assert(!Advance(remote) && remote.Ready() && remote.FingerprintObserved() && remote.SecurityReadObserved());
+            const u8 press[]{0x52,0,0},release[]{0,0,0};
+            Queue(4,0x1812,0x2a4d,0,press,sizeof press);f.now+=20;
+            assert(!remote.Poll(f.now) && remote.Buttons()==Up);
+            Queue(4,0x1812,0x2a4d,0,release,sizeof release);f.now+=20;
+            assert(!remote.Poll(f.now) && !remote.Buttons());
+        }
+        remote.Close();assert(!f.scan_starts && !f.scan_stops && !f.scan_getters && !f.disconnects && !f.pair_calls && !f.native_bonds);
+    }
+    std::cout<<"PASS known reconnect:14 actual SDK adapter scenarios; no scan/cache operations, one explicit address request, existing system/user target/error/capacity/deadline/replay/marker refusal; original fingerprint/security/input press-release path. NOT device or bonding proof.\n";
+#endif
+    for (unsigned variant=0;variant<9;++variant) {
+        Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;f.preconnect_variant=variant;
+        LibnxSession remote(Log,true,true,true,true,true,true);
+        assert(!remote.InitializeIdentityTest(f.target));
+        assert(!remote.StartLinkOnlyScan(f.now));
+        if (variant==7)f.connected=true; // The user view already owns the target.
+        const auto sighting=Sighting();const auto before=f.now;
+        const auto rc=remote.ConfirmObservedLink(sighting,before,before+60000);
+        const bool admitted=variant==0 || variant==2;
+        assert(bool(rc)==!admitted && f.connects==unsigned(admitted));
+        assert(f.preconnect_system_queries==unsigned(variant!=7));
+        assert(f.system_opens==1 && !f.system_closes && !f.pair_calls && !f.native_bonds && !f.native_calls);
+        assert(std::filesystem::exists("sdmc:/config/amazon-remote/link-test-pending.txt"));
+        if (variant==1 || variant==6)assert(Logged("PREEXISTING_SYSTEM_TARGET"));
+        if (variant==8)assert(Logged("Final presence gate expired/invalid"));
+        remote.Close();assert(!f.disconnects && f.system_closes==1);
+    }
+    std::cout<<"PASS preconnect system view:9 actual SDK adapter scenarios; system-only target, user target, error/capacity/overflow and expired presence refused; unrelated target permitted; one existing system client, no explicit bonding or foreign disconnect. NOT hardware proof.\n";
+#ifdef ARMODULE_NATIVE_OWNER
+    for(unsigned i=0;i<33;++i)NativeOwnerFlow(i);
+    NativeOwnerFlow(35);
+    std::cout<<"PASS native owner: 34 live SDK adapter scenarios; no extra clients/close/reconnect/pair route, exact command10 ABI, one-shot intent+revalidation, timeout/reassignment/error refusal. NOT device bond proof.\n";
+#endif
 #ifdef ARMODULE_NAV17
     assert(!InspectServiceUuid(16,nullptr).valid_length);
     assert(!InspectServiceUuid(0xffffffff,BtmManagedProfileUuid.data()).valid_length);
@@ -616,8 +1241,22 @@ int main() {
 #endif
     GoodFlow(); FingerprintUnchanged();
     for(unsigned variant=0;variant<3;++variant)SustainedFlow(variant);
+#ifdef ARMODULE_RECONNECT_CHECK
+    for(bool ready:{false,true})for(bool instance:{false,true})for(bool persist:{false,true}) {
+        Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;
+        LibnxSession remote(Log,true,true,true,true,true,true);
+        if(ready){Start(remote);assert(!Advance(remote) && remote.Ready());}
+        const auto connections=f.connects,reads=f.characteristic_reads,writes=f.writes;
+        assert(remote.EnrollOnce(instance?42:0,persist?EnrollmentIntentPersist:nullptr));
+        assert(!f.pair_calls && !f.native_bonds && !f.intent_calls && !f.paired_getters);
+        assert(f.connects==connections && f.characteristic_reads==reads && f.writes==writes);
+        remote.Close();assert(!f.disconnects);
+    }
+    std::cout<<"PASS reconnect-only transport:8 direct enrollment refusal cases, no intent/client/connect/read/write/pair side effects; normal fingerprint/input path preserved. NOT stored-bond proof.\n";
+#else
     for(bool system:{false,true})for(unsigned variant=0;variant<23;++variant)EnrollmentFlow(variant,system);
     EnrollmentServiceGuards();
+#endif
     for(unsigned variant=0;variant<15;++variant) {
         Sandbox sandbox;f=FakeState{};f.system=f.native_requests=true;
         LibnxSession remote(Log,true,true,true,true,true,true);Start(remote);
@@ -649,7 +1288,9 @@ int main() {
         remote.Close();assert(!f.disconnects);
     }
     std::cout<<"PASS same-session enrollment context:15 actual adapter scenarios; borrowed clients preserved, binding checks, independent query errors, clock bounds, neutral/READY guards, one-shot and zero pairing requests. NOT hardware proof.\n";
+#ifndef ARMODULE_RECONNECT_CHECK
     std::cout<<"PASS enrollment transport:46 scenarios across fixed user/system routes; no automatic/duplicate/fallback request; exact target/neutral/fingerprint guards and bounded list observation. NOT hardware proof.\n";
+#endif
     for (unsigned variant=0;variant<6;++variant) SystemFlow(variant);
     for(unsigned command:{90u,91u,93u,94u})NativeRequestFailure(command);
     NativeWhitelist();
@@ -659,4 +1300,5 @@ int main() {
     for(auto scenario : {PreBindingDelay,PostBindingDelay,PreMetadataDelay}) MetadataDeadline(scenario);
     for(auto scenario : {DriverRecovered,DriverOpenError,DriverReadError,DriverWrongUuid,DriverRepeatedInstance,DriverUnknownInstance,DriverConflict,DriverBindingDelay,DriverReassigned,DriverZeroSelected,DriverDeviceShape}) DriverFlow(scenario);
     std::cout << "PASS actual LibnxSession adapter under fake SDK: ordered fingerprint/security/metadata/CCC, button decoding, zero/ambiguous metadata, security errors/timeouts, invalid notifications, fixed session expiry and target-safe cleanup. NOT hardware proof.\n";
+    return 0;
 }

@@ -36,8 +36,41 @@ validated. See [compatibility and evidence](docs/COMPATIBILITY.md).
 - `mc_mitm/source/amazon_remote`: public transport, bounded GATT client, decoder
   and passive observer source. Kept in this layout to make the observer patch
   reproducible against its public upstream.
+- `patches/missioncontrol-capture-preflight-p2.patch`: apply after the existing
+  observer, core-security, filter and lease-scan patches. Adds read-only capture
+  availability/first-close-request metadata. Window Check P2 uses this before
+  offering Start/Search. It does not extend, reset or rearm the capture lease.
+  The first recorded request is evidence, not an attribution of the winning
+  operation when close requests race. Pairing, radio and controller code are
+  unchanged. P2 still needs console validation; no new wake/reconnect claim.
 - `patches/missioncontrol-observer.patch`: our changes to **public** MissionControl
   for passive, target-only sightings and bounded capture-control IPC.
+- `patches/missioncontrol-core-security.patch`: apply after the observer patch;
+  adds a target-only core-event metadata tap and read-only getter. Off-device
+  candidate only; PIN/SSP requests and raw link subtypes are not bond proof.
+- `tools/amazon-remote-pairing-audit/driver_state_main.cpp`: one-shot read-only
+  `btdrv` command100 getter, with an owned session and a metadata-only64-byte
+  record. No driver initialization or shared-event reads. True can exclude the
+  default stub only when the live image matches the reviewed stored firmware;
+  false/errors do not identify a backend. Neither response establishes BLE
+  bonding, encryption or persistence. Requires firmware22.5.0; no reboot or
+  remote pairing mode needed. Decode with `scripts/read_driver_state_snapshot.py`.
+- `tools/amazon-remote-pairing-audit/native_bond_owner_main.cpp`: the current
+  experimental operator-triggered native command10 trial. The GUI sends one
+  fresh, instance-bound command to Navigation17; it opens no Bluetooth clients.
+  The owner uses its existing user/system/driver clients, with current target
+  checks before and after durable intent. This avoids the extra `btm` client
+  which returned `sm::OutOfSessions` in the standalone trial. Off-device tests
+  pass; device bonding and persistence remain unverified. The retained
+  `native_bond_main.cpp` is the old standalone diagnostic, not the current build.
+  Requires the exact pinned Navigation17 runtime in neutral READY, its fresh
+  same-session Y context, an exact current target/handle match, enabled driver,
+  exclusive durable intent and revalidation before one request. No retries,
+  reset, shared-event consumption, key reads or managed-UUID spoofing. Request
+  acceptance is an unknown asynchronous outcome, not a bond or persistence
+  claim. The transport field does not force BLE in the reviewed implementation.
+- `tools/amazon-remote-pairing-audit/core_main.cpp`: read-only collector for
+  retained observer-v7 metadata. It does not arm capture or initiate pairing.
 - `host_tests`: sanitizers, fake public-SDK tests and race/lifetime tests.
 
 This does **not** contain or require unpublished MissionControl BLE source.
@@ -100,6 +133,18 @@ before activation. Keep your known-working boot/recovery route and backups.
 There are no game files, firmware images, NAND data or console keys in this repo.
 
 ## Contributing
+
+The supervised `0.1.6-post1` Trial build is a **read-only post-request check**,
+not another bonding attempt. It reuses the existing sequential user/system
+connection and AD-scoped paired-list getters after validating an accepted owner
+result, its durable intent and the same cleanly stopped module session. Only
+physical Joy-Con A collects metadata; one exclusive `postcheck.bin` is synced
+and read back. Existing or partial evidence blocks repetition. It never
+publishes a module command, opens the native driver, reads keys or changes
+pairings/radio state. The paired-list scope remains experimental; an empty list
+does not disprove bonding, and a match does not prove encryption or persistence.
+The request frontend is retained as source for regression checks, not built into
+this Post1 NRO. This is not a production release or hardware-validation claim.
 
 We welcome careful hardware testing, public-API research, controller/lifecycle
 improvements and support for additional remotes. Start with

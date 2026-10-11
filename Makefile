@@ -1,5 +1,6 @@
 .PHONY: host-test switch-build privacy-check release-test
 host-test:
+	python3 scripts/test_controller_capabilities.py
 	$(MAKE) -C host_tests test
 	$(MAKE) -C tools/amazon-remote-module host-test
 switch-build:
