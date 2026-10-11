@@ -1,5 +1,10 @@
 # Setup sleep R3: retry after a missed first connection
 
+> **Withdrawn 2026-10-11.** On its second device run, R3's new path hung the
+> console while entering sleep and needed a manual power cycle. The console was
+> rolled back to H1 and S1. Do not reinstall this build. See
+> [device results](#device-results-2026-10-11).
+
 R3 builds on H1 (A3 lineage). It changes one rule: a sleep while the remote is
 still connecting no longer ends the module for the rest of the boot.
 
@@ -59,4 +64,24 @@ the R3 change; the companion to installed S1 apart from the R3 change.
 - A pending connection request cannot be cancelled through public APIs. R3
   relies on the observed sleep teardown and confirms absence in two views
   before any new attempt.
-- Not yet device-tested.
+## Device results, 2026-10-11
+
+1. **Run 1.** The remote connected 12 ms after the boot request, so the
+   lock-screen sleep found a READY session and took the unchanged A3 path. It
+   reconnected about 7.8 s after the wake. This showed R3 boots and A3 still
+   works, but did not exercise the new path.
+2. **Run 2.** With the remote's batteries removed, the connection stayed
+   pending. At the lock-screen sleep, R3 retired the attempt as designed and
+   logged `SETUP_R3_SLEEP_PENDING`. The module closes its log before the PSC
+   acknowledgement, so nothing further is recorded. The console then **hung
+   entering sleep**.
+
+This was the first time sleep was entered with a pending native connection
+request while the companion was in its paused-session state. Under H1 the same
+case took the terminal path and slept normally in several boots. The leading,
+unproven hypothesis: the paused-session path leaves the filter-correction,
+lease-scan and receiver runtimes unsuspended, unlike the terminal path. The
+system sleep path must cancel the pending connection and wait for its
+completion, and that wait may never finish. Any successor must either fully
+suspend the companion's event-side runtimes for this case, or prove that the
+pending-connection cancel completes, before another device test.
