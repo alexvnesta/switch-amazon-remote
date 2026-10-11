@@ -165,6 +165,14 @@ test-setup-r3: test_wake_session_r3 test_setup_r3_central test_wake_central_r3 t
 	./test_setup_r3_transport
 	./test_wake_transport_r3
 .PHONY: test-setup-r3
+# G1: no companion storage work during power transitions.
+test_storage_gate: test_storage_gate.cpp ../mc_mitm/source/amazon_remote/storage_gate.hpp ../mc_mitm/source/amazon_remote/managed_observer_runtime.cpp
+	$(CXX) $(CXXFLAGS) $< -o $@
+test-storage-gate: test_storage_gate
+	./test_storage_gate
+.PHONY: test-storage-gate
+all: test_storage_gate
+test: test-storage-gate
 all: test_wake_session_r3 test_setup_r3_central test_wake_central_r3 test_setup_r3_transport test_wake_transport_r3
 test: test-setup-r3
 .PHONY: test-wake-transport

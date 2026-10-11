@@ -22,6 +22,9 @@
 #include "receiver_diagnostic.hpp"
 #include "intent_trace_runtime.hpp"
 #include "sleep_resume_trace_runtime.hpp"
+#ifdef ARMODULE_SLEEP_STORAGE_GUARD_G1
+#include "storage_gate.hpp"
+#endif
 #include "../bluetooth_mitm/bluetooth/bluetooth_ble.hpp"
 
 namespace ams::mc::amazon_observer {
@@ -72,6 +75,9 @@ constexpr unsigned TraceDrainBudget = 4;
 ::amazon_remote::PowerLifecycle g_power;
 #ifdef ARMODULE_WAKE_A3
 os::SdkMutex g_wake_mutex;
+#endif
+#ifdef ARMODULE_SLEEP_STORAGE_GUARD_G1
+::amazon_remote::StorageGate g_storage_gate; // Main thread only: PSC handling and both timers.
 #endif
 ::amazon_remote::ConnectionEvidenceSnapshot g_connections;
 ::amazon_remote::CoreSecuritySnapshot g_core_security; // Core thread's sole writer.
@@ -293,6 +299,9 @@ void Start() {
 
 #ifdef ARMODULE_WAKE_A3
 void PollHandshake() {
+#ifdef ARMODULE_SLEEP_STORAGE_GUARD_G1
+    if(!g_storage_gate.Open())return; // saved-record load/save is storage work
+#endif
     // Runtime guards skip I/O while suspended/unconfigured and after the one
     // initial load unless peer preparation or security work is outstanding.
     central_bond_runtime::Poll();
@@ -300,7 +309,11 @@ void PollHandshake() {
 #endif
 
 void Poll() {
-    sleep_resume_trace::Poll();
+    sleep_resume_trace::Poll(); // Its own opt-in persists only after acknowledged wake.
+#ifdef ARMODULE_SLEEP_STORAGE_GUARD_G1
+    // No diagnostic writer, log flush or bond save starts during a power transition.
+    if(!g_storage_gate.Open())return;
+#endif
 #if defined(ARMODULE_CENTRAL_BOND_B1) && !defined(ARMODULE_WAKE_A3)
     central_bond_runtime::Poll();
 #endif
@@ -412,6 +425,9 @@ void Suspend(bool shutdown) {
         ::amazon_remote::CaptureCloseReason::SleepRequest);
 }
 void PowerRequest(std::uint32_t state,std::uint32_t flags,std::uint32_t result) {
+#ifdef ARMODULE_SLEEP_STORAGE_GUARD_G1
+    g_storage_gate.Request(state,result); // close before any handler or later IPC End
+#endif
     sleep_resume_trace::PowerRequest(state,flags,result);
 #ifdef ARMODULE_WAKE_A3
     std::scoped_lock lock(g_wake_mutex);
@@ -425,6 +441,9 @@ void PowerAcknowledge(std::uint32_t result) {
     std::scoped_lock lock(g_wake_mutex);
 #endif
     PowerAdapter adapter;g_power.Acknowledge(result,adapter);
+#ifdef ARMODULE_SLEEP_STORAGE_GUARD_G1
+    g_storage_gate.Acknowledge(result);
+#endif
 }
 #ifdef ARMODULE_WAKE_A3
 bool ResumeSavedSession(std::uint64_t caller,const ::amazon_remote::central_bond::WakeRequest &request){
